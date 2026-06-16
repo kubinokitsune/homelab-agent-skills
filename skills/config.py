@@ -87,6 +87,17 @@ class Config:
     def qdrant_api_key(self) -> str | None:
         return self._get("QDRANT_API_KEY")  # optional for a local instance
 
+    # -- Ollama: shared embedding/LLM service ------------------------------
+
+    @property
+    def ollama_host(self) -> str:
+        return self._get("OLLAMA_HOST", "http://localhost:11434")  # type: ignore[return-value]
+
+    @property
+    def embed_model(self) -> str:
+        """Ollama model used to turn text into vectors. Default 768-dim."""
+        return self._get("EMBED_MODEL", "nomic-embed-text")  # type: ignore[return-value]
+
     # -- Obsidian vault: shared brain --------------------------------------
 
     @property
