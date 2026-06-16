@@ -2,3 +2,4 @@
 # Kept minimal -- each skill adds only what it genuinely needs.
 
 python-dotenv>=1.0.0
+PyYAML>=6.0          # Obsidian frontmatter parsing (obsidian_vault skill)
