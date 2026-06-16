@@ -1,0 +1,4 @@
+# Shared skills library dependencies.
+# Kept minimal -- each skill adds only what it genuinely needs.
+
+python-dotenv>=1.0.0
