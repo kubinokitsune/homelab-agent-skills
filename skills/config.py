@@ -98,6 +98,11 @@ class Config:
         """Ollama model used to turn text into vectors. Default 768-dim."""
         return self._get("EMBED_MODEL", "nomic-embed-text")  # type: ignore[return-value]
 
+    @property
+    def default_model(self) -> str:
+        """Default Ollama chat model for conversational agents (override per-agent)."""
+        return self._get("DEFAULT_AGENT_MODEL", "llama3.1:8b")  # type: ignore[return-value]
+
     # -- File ops: allowlisted server roots --------------------------------
 
     @property

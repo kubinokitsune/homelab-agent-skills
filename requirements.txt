@@ -5,3 +5,7 @@ python-dotenv>=1.0.0
 PyYAML>=6.0          # Obsidian frontmatter parsing (obsidian_vault skill)
 qdrant-client>=1.7   # vector store (vector_store skill); embeddings via Ollama HTTP
 ddgs>=5.0            # no-key DuckDuckGo backend (web_search skill)
+
+# Only needed if you use the discord_agent base (conversational agents):
+discord.py>=2.0.0
+aiohttp>=3.8.0
