@@ -98,6 +98,20 @@ class Config:
         """Ollama model used to turn text into vectors. Default 768-dim."""
         return self._get("EMBED_MODEL", "nomic-embed-text")  # type: ignore[return-value]
 
+    # -- File ops: allowlisted server roots --------------------------------
+
+    @property
+    def file_ops_roots(self) -> tuple[Path, ...]:
+        """Directories file_ops is allowed to touch (OS-pathsep separated).
+
+        Empty by default -- file_ops refuses to operate until you set
+        FILE_OPS_ROOTS, so nothing roams the filesystem unintentionally.
+        """
+        raw = self._get("FILE_OPS_ROOTS")
+        if not raw:
+            return ()
+        return tuple(Path(p).resolve() for p in raw.split(os.pathsep) if p.strip())
+
     # -- Web search --------------------------------------------------------
 
     @property

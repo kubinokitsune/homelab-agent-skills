@@ -40,7 +40,17 @@ pip install -r requirements.txt
 cp .env.example .env      # then fill in real values (never committed)
 ```
 
+## Global skills
+
+| Skill | Does | External dep |
+|-------|------|--------------|
+| `notifications.py` | Discord + Pushover alerts, routed by severity | webhooks, Pushover |
+| `obsidian_vault.py` | Read/write/search the vault (frontmatter-aware, no-clobber) | the vault folder |
+| `vector_store.py`   | Semantic memory: upsert/query/delete/count | Qdrant + Ollama |
+| `web_search.py`     | Keyless web search, normalized results | DuckDuckGo (ddgs) |
+| `file_ops.py`       | Allowlisted server filesystem ops | `FILE_OPS_ROOTS` |
+
 ## Status
 
-Step 0 contract complete. Next: global skills in order — `notifications.py`,
-`obsidian_vault.py`, `vector_store.py`, `web_search.py`, `file_ops.py`.
+Phase 1 skills complete (all tested against live infra). Deferred to Phase 2
+(need server infra): `health_data`, `calendar`, `git_ops`, `homelab_api`, `mqtt_client`.
