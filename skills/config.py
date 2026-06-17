@@ -98,6 +98,18 @@ class Config:
         """Ollama model used to turn text into vectors. Default 768-dim."""
         return self._get("EMBED_MODEL", "nomic-embed-text")  # type: ignore[return-value]
 
+    # -- Web search --------------------------------------------------------
+
+    @property
+    def search_backend(self) -> str:
+        """Which web-search backend to use. Default 'duckduckgo' (no key)."""
+        return self._get("SEARCH_BACKEND", "duckduckgo").lower()  # type: ignore[union-attr]
+
+    @property
+    def search_api_key(self) -> str | None:
+        """API key for a paid backend (Brave/SerpAPI). Unused by duckduckgo."""
+        return self._get("SEARCH_API_KEY")
+
     # -- Obsidian vault: shared brain --------------------------------------
 
     @property
