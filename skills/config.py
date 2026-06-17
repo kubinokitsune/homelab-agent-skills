@@ -135,6 +135,20 @@ class Config:
     def vault_path(self) -> Path:
         return Path(self._require("OBSIDIAN_VAULT_PATH"))
 
+    # -- Agent reports: daily handoff for Iris -----------------------------
+
+    @property
+    def agent_reports_dir(self) -> Path:
+        """Where agents write daily reports for Iris to compile.
+
+        Defaults to ``agent-reports/`` beside the skills library (outside the
+        Obsidian vault, so it doesn't pollute Axiom's index).
+        """
+        raw = self._get("AGENT_REPORTS_DIR")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-reports"
+
     # -- Pushover: critical alerts that bypass DND -------------------------
 
     @property

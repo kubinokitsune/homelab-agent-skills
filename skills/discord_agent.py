@@ -226,6 +226,19 @@ class DiscordAgent:
             answer += "\n\n—\n*Drew from: " + ", ".join(titles) + "*"
         return answer
 
+    async def post(self, channel_id: int, text: str) -> bool:
+        """Proactively post to a channel by ID -- for scheduled/unprompted output.
+
+        Returns False if the channel isn't found or visible to the bot.
+        """
+        channel = self.client.get_channel(channel_id)
+        if channel is None:
+            self.log.warning("post: channel %s not found or not visible", channel_id)
+            return False
+        for i in range(0, len(text), 1900):
+            await channel.send(text[i:i + 1900])
+        return True
+
     async def _reply_chunked(self, message: discord.Message, text: str) -> None:
         """Split replies over Discord's 2000-char cap."""
         if len(text) <= 1900:
