@@ -62,7 +62,13 @@ def _split_frontmatter(raw: str) -> tuple[dict, str]:
     if raw.startswith("---"):
         parts = raw.split("---", 2)
         if len(parts) == 3:
-            meta = yaml.safe_load(parts[1]) or {}
+            try:
+                meta = yaml.safe_load(parts[1]) or {}
+            except yaml.YAMLError:
+                # Malformed frontmatter (e.g. an unquoted colon in a value) --
+                # don't let it make the note invisible. Treat as no frontmatter
+                # and keep the body so the note stays readable and searchable.
+                meta = {}
             if isinstance(meta, dict):
                 return meta, parts[2].lstrip("\n")
     return {}, raw
