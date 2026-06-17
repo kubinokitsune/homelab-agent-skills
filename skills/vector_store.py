@@ -23,6 +23,7 @@ same ``doc_id`` again updates in place rather than duplicating.
 from __future__ import annotations
 
 import json
+import math
 import urllib.request
 import uuid
 
@@ -145,3 +146,46 @@ def count(collection: str) -> Result:
     if not client.collection_exists(collection):
         return Result.success(0)
     return Result.success(client.count(collection_name=collection).count)
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+@skill
+def find_duplicate_pairs(collection: str, threshold: float = 0.9, max_pairs: int = 25) -> Result:
+    """Find near-duplicate entries by comparing the vectors already in Qdrant.
+
+    Reuses the stored embeddings (no re-embedding), so it's fast. Returns up to
+    ``max_pairs`` of {'a', 'b', 'score'} with cosine similarity >= ``threshold``,
+    highest first.
+    """
+    client = _qdrant()
+    if not client.collection_exists(collection):
+        return Result.success([])
+
+    points, offset = [], None
+    while True:
+        batch, offset = client.scroll(
+            collection_name=collection, with_vectors=True, with_payload=True,
+            limit=256, offset=offset,
+        )
+        points.extend(batch)
+        if offset is None:
+            break
+
+    pairs = []
+    for i in range(len(points)):
+        for j in range(i + 1, len(points)):
+            score = _cosine(points[i].vector, points[j].vector)
+            if score >= threshold:
+                pairs.append({
+                    "a": points[i].payload.get("doc_id"),
+                    "b": points[j].payload.get("doc_id"),
+                    "score": round(score, 3),
+                })
+    pairs.sort(key=lambda p: -p["score"])
+    return Result.success(pairs[:max_pairs])
