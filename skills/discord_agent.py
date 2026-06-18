@@ -74,8 +74,12 @@ class DiscordAgent:
         history_messages: int = 6,
         context_k: int = 4,
         min_score: float = 0.4,
+        auto_channel_ids: list[int] | None = None,
     ) -> None:
         self.name = name
+        # Channels where the agent answers EVERY (human) message, no @mention
+        # needed -- a dedicated ChatGPT-style room.
+        self.auto_channel_ids = set(auto_channel_ids or [])
         self.system_prompt = system_prompt
         self.memory_collection = memory_collection
         self.help_text = help_text or f"**{name}** -- @mention or DM me a question."
@@ -165,8 +169,12 @@ class DiscordAgent:
             self.log.exception("startup hook failed")
 
     def _addressed(self, message: discord.Message) -> bool:
-        """True if this message is for us: DM, @mention, or a ping of our role."""
+        """True if this message is for us: DM, @mention, role ping, or any
+        message in a dedicated auto-respond channel."""
         if isinstance(message.channel, discord.DMChannel):
+            return True
+        # In a dedicated channel, answer every human message (skip other bots).
+        if message.channel.id in self.auto_channel_ids and not message.author.bot:
             return True
         if self.client.user.mentioned_in(message):
             return True
