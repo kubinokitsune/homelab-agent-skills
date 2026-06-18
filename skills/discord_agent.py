@@ -45,6 +45,7 @@ from typing import Awaitable, Callable
 import aiohttp
 import discord
 
+from skills import agent_mail
 from skills import vector_store as vs
 from skills.config import config
 from skills.logging import get_logger, set_agent
@@ -93,6 +94,7 @@ class DiscordAgent:
         self._history: dict[int, deque] = defaultdict(lambda: deque(maxlen=history_messages))
         self._commands: dict[str, CommandHandler] = {}
         self._startup: StartupHook | None = None
+        self._mail_handler = None  # optional inter-agent message handler
 
         intents = discord.Intents.default()
         intents.message_content = True
@@ -112,6 +114,15 @@ class DiscordAgent:
     def on_startup(self, fn: StartupHook) -> StartupHook:
         """Register a coroutine run (in the background) once the bot connects."""
         self._startup = fn
+        return fn
+
+    def on_mail(self, fn):
+        """Register a handler for inter-agent messages: ``(agent, msg) -> None``.
+
+        ``msg`` is a dict with from/to/subject/body. Without one, received mail
+        is just surfaced in the agent's channel.
+        """
+        self._mail_handler = fn
         return fn
 
     # -- core capabilities (usable from command handlers) ------------------
@@ -161,12 +172,46 @@ class DiscordAgent:
         self.log.info("%s online as %s (id=%s)", self.name, self.client.user, self.client.user.id)
         if self._startup is not None:
             asyncio.create_task(self._run_startup())
+        asyncio.create_task(self._poll_inbox())
 
     async def _run_startup(self) -> None:
         try:
             await self._startup(self)  # type: ignore[misc]
         except Exception:
             self.log.exception("startup hook failed")
+
+    async def _poll_inbox(self) -> None:
+        """Check this agent's mailbox every 60s and handle new messages."""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                res = await asyncio.to_thread(agent_mail.inbox, self.name)
+                for msg in (res.data or []):
+                    await self._handle_mail(msg)
+                    await asyncio.to_thread(agent_mail.archive, msg["path"])
+            except Exception:
+                self.log.exception("inbox poll failed")
+
+    async def _handle_mail(self, msg: dict) -> None:
+        """Custom handler if registered, else surface the message in the channel."""
+        if self._mail_handler is not None:
+            await self._mail_handler(self, msg)
+            return
+        text = f"📨 **{msg.get('from')} → {self.name}**: {msg.get('subject')}"
+        if msg.get("body"):
+            text += f"\n{msg['body']}"
+        for cid in self.auto_channel_ids:
+            await self.post(cid, text)
+            return
+        self.log.info("mail from %s: %s", msg.get("from"), msg.get("subject"))
+
+    async def _cmd_tell(self, args: str) -> str:
+        """Built-in: ``!tell <Agent> <message>`` sends another agent a message."""
+        to, _, body = args.partition(" ")
+        if not to or not body:
+            return "Usage: `!tell <Agent> <message>` -- e.g. `!tell Axiom run a duplicate scan`."
+        res = await asyncio.to_thread(agent_mail.send, to.capitalize(), self.name, body)
+        return f"Message on its way to {to.capitalize()}." if res.ok else f"Couldn't send: {res.error}"
 
     def _addressed(self, message: discord.Message) -> bool:
         """True if this message is for us: DM, @mention, role ping, or any
@@ -216,6 +261,8 @@ class DiscordAgent:
             cmd = cmd.lower()
             if cmd == "help":
                 return self.help_text
+            if cmd == "tell":
+                return await self._cmd_tell(args.strip())
             handler = self._commands.get(cmd)
             if handler is None:
                 return f"Unknown command `!{cmd}`. Try `!help`."

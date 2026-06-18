@@ -149,6 +149,17 @@ class Config:
             return Path(raw)
         return Path(__file__).resolve().parent.parent.parent / "agent-reports"
 
+    @property
+    def agent_mail_dir(self) -> Path:
+        """Where agents drop messages for each other (the spider web).
+
+        Defaults to ``agent-mail/`` beside the skills library, like agent-reports.
+        """
+        raw = self._get("AGENT_MAIL_DIR")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-mail"
+
     # -- Pushover: critical alerts that bypass DND -------------------------
 
     @property
