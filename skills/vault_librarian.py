@@ -53,8 +53,16 @@ MAX_LINKS = 40           # notes connected per run
 ARCHIVE_FOLDER = "_Archive"
 MOC_FOLDER = "00_MOC"
 
-# Folders never touched by the edit/merge stages (append-only or generated).
-PROTECTED_PREFIXES = (ARCHIVE_FOLDER + "/", MOC_FOLDER + "/", "01_Conversations/")
+# Folders never touched by the edit stages (merge + connect). Append-only logs,
+# generated MOCs, the archive, and -- by Pipe's rule -- IB coursework, which must
+# stay separate from personal projects (no merging IA notes, no cross-linking
+# coursework into project notes).
+NO_EDIT_PREFIXES = (ARCHIVE_FOLDER + "/", MOC_FOLDER + "/", "01_Conversations/", "School/")
+
+# Folders excluded only from MOC building (generated/archive). Coursework is NOT
+# here: School still gets its own internal MOC -- that organizes school notes
+# among themselves, which doesn't mix them with anything.
+_MOC_SKIP_PREFIXES = (ARCHIVE_FOLDER + "/", MOC_FOLDER + "/")
 
 # Default "main nodes" to build subcategory MOCs for. Override via organize().
 DEFAULT_MOC_FOLDERS = ["02_Topics", "School", "04_Projects", "05_Reference"]
@@ -72,7 +80,8 @@ def _title(rel_path: str) -> str:
 
 
 def _protected(rel_path: str) -> bool:
-    return rel_path.startswith(PROTECTED_PREFIXES)
+    """True if a note is off-limits to the merge/connect (edit) stages."""
+    return rel_path.startswith(NO_EDIT_PREFIXES)
 
 
 # -- stage 1: merge near-duplicates ----------------------------------------
@@ -280,7 +289,7 @@ def build_mocs(main_folders: list[str], dry_run: bool, model: str | None) -> tup
         listed = vault.list_notes(folder=folder)
         if not listed.ok:
             continue
-        notes = [n for n in listed.data if not _protected(n)]
+        notes = [n for n in listed.data if not n.startswith(_MOC_SKIP_PREFIXES)]
         if len(notes) < 4:  # too few to be worth a MOC
             continue
         groups = _cluster_titles(folder, notes, model)
