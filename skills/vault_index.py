@@ -54,3 +54,28 @@ def index(collection: str, folders: list[str] | None = None) -> Result:
                 indexed += 1
     log.info("indexed %d notes into '%s'", indexed, collection)
     return Result.success({"indexed": indexed, "collection": collection})
+
+
+@skill
+def index_one(collection: str, rel_path: str) -> Result:
+    """Embed a single note into ``collection`` -- the incremental path.
+
+    Used when an agent is told a specific note changed (e.g. Axiom hears from
+    Forge that a note was saved) and wants to fold just that note in without
+    re-embedding the whole vault. Uses the same doc_id/payload schema as
+    ``index`` so query results stay consistent. Empty notes are skipped.
+    """
+    note = vault.read_note(rel_path)
+    if not note.ok:
+        return Result.failure(f"couldn't read note '{rel_path}': {note.error}")
+    body = note.data["body"].strip()
+    if not body:
+        return Result.failure(f"note '{rel_path}' is empty -- nothing to index")
+    title = Path(rel_path).stem
+    top = rel_path.split("/")[0] if "/" in rel_path else "(root)"
+    text = f"{title}\n\n{body}"[:_MAX_EMBED_CHARS]
+    r = vs.upsert(collection, rel_path, text, payload={"title": title, "folder": top})
+    if not r.ok:
+        return Result.failure(r.error)
+    log.info("indexed one note '%s' into '%s'", rel_path, collection)
+    return Result.success({"indexed": 1, "doc_id": rel_path, "collection": collection})
