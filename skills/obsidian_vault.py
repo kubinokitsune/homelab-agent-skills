@@ -202,6 +202,27 @@ def list_notes(folder: str | None = None) -> Result:
     return Result.success(notes)
 
 
+@skill
+def move_note(src: str, dst: str, overwrite: bool = False) -> Result:
+    """Move a note within the vault (e.g. into ``_Archive/``). Confined to the vault.
+
+    Creates the destination's parent folders. Refuses to clobber an existing
+    destination unless ``overwrite=True``. This is how the librarian *archives* a
+    note instead of deleting it -- the file is preserved, just relocated. Obsidian
+    resolves ``[[wikilinks]]`` by basename, so links to a moved note still work.
+    """
+    source = _resolve(src)
+    if not source.exists():
+        return Result.failure(f"note not found: {src}")
+    target = _resolve(dst)
+    if target.exists() and not overwrite:
+        return Result.failure(f"destination exists (pass overwrite=True): {dst}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source.replace(target)
+    log.info("moved note %s -> %s", src, _relativize(target))
+    return Result.success({"from": src, "to": _relativize(target)})
+
+
 def note_exists(path: str) -> bool:
     """Quick existence check (not a Result -- can't meaningfully fail)."""
     try:

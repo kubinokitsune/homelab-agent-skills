@@ -40,6 +40,9 @@ def index(collection: str, folders: list[str] | None = None) -> Result:
             log.warning("skipping folder '%s': %s", folder or "(vault)", listed.error)
             continue
         for rel_path in listed.data:
+            # Archived notes are kept for recovery but shouldn't show in search.
+            if rel_path.startswith("_Archive/"):
+                continue
             note = vault.read_note(rel_path)
             if not note.ok:
                 continue
