@@ -161,6 +161,17 @@ class Config:
         return Path(__file__).resolve().parent.parent.parent / "agent-mail"
 
     @property
+    def parts_list_path(self) -> Path:
+        """Forge's engineering shopping list (JSON source of truth).
+
+        Defaults to ``agent-data/forge_parts.json`` beside the skills library.
+        """
+        raw = self._get("PARTS_LIST_PATH")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "forge_parts.json"
+
+    @property
     def calendar_path(self) -> Path:
         """The shared calendar JSON (source of truth for dates/events).
 
