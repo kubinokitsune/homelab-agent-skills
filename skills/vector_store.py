@@ -58,6 +58,9 @@ def _qdrant() -> QdrantClient:
 
 def _embed(text: str) -> list[float]:
     """Turn text into a vector via Ollama's embedding endpoint."""
+    # Strip control/NULL chars that can sneak in from extracted PDF text and make
+    # Ollama's embedding endpoint 500. Keep tab/newline.
+    text = "".join(c for c in text if c in "\t\n" or ord(c) >= 32)
     payload = json.dumps({"model": config.embed_model, "prompt": text}).encode()
     req = urllib.request.Request(
         f"{config.ollama_host}/api/embeddings",

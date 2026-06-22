@@ -76,9 +76,15 @@ def index_one(collection: str, rel_path: str) -> Result:
         return Result.failure(f"note '{rel_path}' is empty -- nothing to index")
     title = Path(rel_path).stem
     top = rel_path.split("/")[0] if "/" in rel_path else "(root)"
+    payload = {"title": title, "folder": top}
     text = f"{title}\n\n{body}"[:_MAX_EMBED_CHARS]
-    r = vs.upsert(collection, rel_path, text, payload={"title": title, "folder": top})
+    r = vs.upsert(collection, rel_path, text, payload=payload)
     if not r.ok:
-        return Result.failure(r.error)
+        # Dense text can exceed the embedder's context window (Ollama 500s).
+        # Retry on a shorter prefix so the note still lands in the index.
+        log.warning("index_one '%s' failed (%s); retrying shorter", rel_path, r.error)
+        r = vs.upsert(collection, rel_path, text[:1500], payload=payload)
+        if not r.ok:
+            return Result.failure(r.error)
     log.info("indexed one note '%s' into '%s'", rel_path, collection)
     return Result.success({"indexed": 1, "doc_id": rel_path, "collection": collection})

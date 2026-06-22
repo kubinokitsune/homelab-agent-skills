@@ -90,6 +90,26 @@ def _classify(text: str) -> dict:
     return {"domain": "reference", "folder": REF_SOURCES, "link": None}
 
 
+def _hint_route(hint: str) -> dict | None:
+    """If the caption names a class or domain, route by that instead of guessing.
+    Lets Pipe steer a source whose *intended* use differs from its content (e.g. a
+    PLA paper that reads like '3D printing' but is for his Physics IA)."""
+    if not hint:
+        return None
+    low = hint.lower()
+    for cls in SCHOOL_CLASSES:
+        if re.search(rf"\b{cls}\b", low):
+            subj = cls.upper() if cls == "tok" else cls.capitalize()
+            return {"domain": "school", "subject": subj,
+                    "folder": f"School/{subj}/Sources", "link": subj}
+    if re.search(r"\b(engineering|forge|project|pcb|cad|hardware|firmware)\b", low):
+        return {"domain": "engineering", "folder": ENG_SOURCES,
+                "link": "Engineering Projects MOC", "extra_collection": "forge_memory"}
+    if re.search(r"\b(reference|misc|general|other)\b", low):
+        return {"domain": "reference", "folder": REF_SOURCES, "link": None}
+    return None
+
+
 def _summarize(title: str, text: str, model: str | None) -> str:
     prompt = (
         f"Summarize this source titled '{title}' for a study/reference note. Give:\n"
@@ -103,14 +123,16 @@ def _summarize(title: str, text: str, model: str | None) -> str:
 
 
 @skill
-def ingest_text(title: str, text: str, origin: str = "paste", model: str | None = None) -> Result:
+def ingest_text(title: str, text: str, origin: str = "paste",
+                model: str | None = None, hint: str = "") -> Result:
     """Ingest one source's text: classify, write source + synthesis notes, embed,
-    link. Returns a summary dict of what was created and where."""
+    link. Returns a summary dict of what was created and where. A ``hint`` (e.g. a
+    drop caption like "physics IA") overrides the content-based routing."""
     text = (text or "").strip()
     if len(text) < 40:
         return Result.failure("source text too short to ingest")
     title = _safe_title(title)
-    cls = _classify(text)
+    cls = _hint_route(hint) or _classify(text)
     folder = cls["folder"]
     link = cls.get("link")
     stamp = datetime.now().strftime("%Y-%m-%d")
