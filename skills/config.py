@@ -161,6 +161,17 @@ class Config:
         return Path(__file__).resolve().parent.parent.parent / "agent-mail"
 
     @property
+    def build_tracker_path(self) -> Path:
+        """Forge's build step-tracking store (JSON).
+
+        Defaults to ``agent-data/forge_builds.json`` beside the skills library.
+        """
+        raw = self._get("BUILD_TRACKER_PATH")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "forge_builds.json"
+
+    @property
     def parts_list_path(self) -> Path:
         """Forge's engineering shopping list (JSON source of truth).
 
