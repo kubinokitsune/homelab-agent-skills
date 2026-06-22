@@ -33,6 +33,7 @@ from skills.result import Result
 log = get_logger(__name__)
 
 INDEX = "vault_index"
+TEXT_EXTS = {"txt", "md", "markdown", "text", "csv", "log"}
 ENG_PREFIXES = ("Engineering Studies/", "04_Projects/")
 MIN_SIGNAL = 0.55        # nearest-neighbour score below which we treat as generic
                          # (real-domain content scores 0.65+; off-topic ~0.48)
@@ -124,10 +125,12 @@ def _summarize(title: str, text: str, model: str | None) -> str:
 
 @skill
 def ingest_text(title: str, text: str, origin: str = "paste",
-                model: str | None = None, hint: str = "") -> Result:
-    """Ingest one source's text: classify, write source + synthesis notes, embed,
-    link. Returns a summary dict of what was created and where. A ``hint`` (e.g. a
-    drop caption like "physics IA") overrides the content-based routing."""
+                model: str | None = None, hint: str = "", summarize: bool = True) -> Result:
+    """Ingest one source's text: classify, write a source note (and, if
+    ``summarize``, a synthesis note), embed, link. Returns a dict of what was
+    created and where. A ``hint`` (e.g. a drop caption like "physics IA")
+    overrides the content-based routing. ``summarize=False`` is the filing mode
+    (Axiom): just sort the document into place, no summary."""
     text = (text or "").strip()
     if len(text) < 40:
         return Result.failure("source text too short to ingest")
@@ -136,39 +139,53 @@ def ingest_text(title: str, text: str, origin: str = "paste",
     folder = cls["folder"]
     link = cls.get("link")
     stamp = datetime.now().strftime("%Y-%m-%d")
-
+    collections = [INDEX] + ([cls["extra_collection"]] if cls.get("extra_collection") else [])
     link_line = f"\n\n_Related: [[{link}]]_\n" if link else ""
-    # 1. Source note (the cleaned content).
+
+    # Source note (the cleaned content).
     src_path = f"{folder}/{title}.md"
-    src_body = f"> [!quote] Source ingested by Codex on {stamp} (origin: {origin})\n\n{text}{link_line}"
+    src_body = f"> [!quote] Ingested {stamp} (origin: {origin})\n\n{text}{link_line}"
     w1 = vault.write_note(src_path, src_body,
                           {"type": "source", "origin": origin,
                            "tags": [cls["domain"], "source"]}, overwrite=True)
     if not w1.ok:
         return Result.failure(f"couldn't write source note: {w1.error}")
-
-    # 2. Synthesis note (Codex's own notes from the source).
-    summary = _summarize(title, text, model)
-    syn_path = f"{folder}/{title} -- Summary.md"
-    syn_body = (f"_Codex synthesis of [[{title}]] ({stamp})._\n\n{summary}{link_line}")
-    vault.write_note(syn_path, syn_body,
-                     {"type": "source-summary", "tags": [cls["domain"], "source", "summary"]},
-                     overwrite=True)
-
-    # 3. Embed both so the other agents can use them.
-    collections = [INDEX]
-    if cls.get("extra_collection"):
-        collections.append(cls["extra_collection"])
     for coll in collections:
         vault_index.index_one(coll, src_path)
-        vault_index.index_one(coll, syn_path)
 
-    log.info("ingested '%s' -> %s (domain=%s, link=%s)", title, folder, cls["domain"], link)
+    # Optional synthesis note (the agent's own notes from the source).
+    summary, syn_path = "", None
+    if summarize:
+        summary = _summarize(title, text, model)
+        syn_path = f"{folder}/{title} -- Summary.md"
+        syn_body = f"_Synthesis of [[{title}]] ({stamp})._\n\n{summary}{link_line}"
+        vault.write_note(syn_path, syn_body,
+                         {"type": "source-summary", "tags": [cls["domain"], "source", "summary"]},
+                         overwrite=True)
+        for coll in collections:
+            vault_index.index_one(coll, syn_path)
+
+    log.info("ingested '%s' -> %s (domain=%s, link=%s, summary=%s)",
+             title, folder, cls["domain"], link, summarize)
     return Result.success({
         "title": title, "domain": cls["domain"], "subject": cls.get("subject"),
-        "link": link, "source_path": src_path, "summary_path": syn_path,
-        "summary": summary,
+        "link": link, "source_path": src_path, "summary_path": syn_path, "summary": summary,
     })
+
+
+def extract_file(filename: str, data: bytes) -> tuple[str, str] | None:
+    """(title, text) from a dropped file's bytes -- PDF or text. None if the type
+    isn't supported. Shared by Codex and Axiom's file intake."""
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    title = Path(filename).stem
+    if ext == "pdf":
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        return title, "\n\n".join((p.extract_text() or "") for p in reader.pages).strip()
+    if ext in TEXT_EXTS:
+        return title, data.decode("utf-8", errors="ignore")
+    return None
 
 
 # -- extractors ------------------------------------------------------------
