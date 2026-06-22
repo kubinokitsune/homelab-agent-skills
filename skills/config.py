@@ -161,6 +161,17 @@ class Config:
         return Path(__file__).resolve().parent.parent.parent / "agent-mail"
 
     @property
+    def calendar_path(self) -> Path:
+        """The shared calendar JSON (source of truth for dates/events).
+
+        Defaults to ``agent-data/calendar.json`` beside the skills library.
+        """
+        raw = self._get("CALENDAR_PATH")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "calendar.json"
+
+    @property
     def error_log_dir(self) -> Path:
         """Where agents log errors/confusions for pattern clustering (Forge et al.).
 

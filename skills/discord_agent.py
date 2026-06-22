@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import defaultdict, deque
+from datetime import date
 from typing import Awaitable, Callable
 
 import aiohttp
@@ -97,6 +98,7 @@ class DiscordAgent:
         self._mail_handler = None       # optional inter-agent message handler
         self._attachment_handler = None  # optional file-upload handler (Codex)
         self._plain_handler = None       # optional non-command-text handler (Codex)
+        self._context_provider = None    # optional extra-context source (Kairos calendar)
 
         intents = discord.Intents.default()
         intents.message_content = True
@@ -134,6 +136,14 @@ class DiscordAgent:
         self._plain_handler = fn
         return fn
 
+    def on_context(self, fn):
+        """Register an extra-context source: ``(agent, question) -> str``. Its
+        return is appended to the RAG context on the conversational path -- e.g.
+        Kairos injecting the real upcoming calendar so it stops trusting dates in
+        old notes."""
+        self._context_provider = fn
+        return fn
+
     def on_mail(self, fn):
         """Register a handler for inter-agent messages: ``(agent, msg) -> None``.
 
@@ -162,7 +172,9 @@ class DiscordAgent:
 
     async def ask(self, question: str, context: str = "", history: list[dict] | None = None) -> str:
         """Ask the local model with optional retrieved context and chat history."""
-        system = self.system_prompt
+        # Always ground the model in the real current date, so it doesn't treat
+        # months-old notes as upcoming ("Copa 506 coming up" written in March).
+        system = f"Today's date is {date.today():%A, %Y-%m-%d}.\n\n" + self.system_prompt
         if context:
             system += (
                 "\n\n## Relevant notes from Pipe's vault\n" + context +
@@ -304,6 +316,13 @@ class DiscordAgent:
 
         # Conversational RAG path.
         context, titles = await self.retrieve_context(content)
+        if self._context_provider is not None:
+            try:
+                extra = await self._context_provider(self, content)
+                if extra:
+                    context = (context + "\n\n" + extra) if context else extra
+            except Exception:
+                self.log.exception("context provider failed")
         try:
             answer = await self.ask(content, context, list(conv))
         except aiohttp.ClientError as exc:
