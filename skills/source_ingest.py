@@ -33,6 +33,7 @@ from skills.result import Result
 log = get_logger(__name__)
 
 INDEX = "vault_index"
+SOURCES = "vault_sources"  # ingested/filed sources only -- Codex's NotebookLM corpus
 TEXT_EXTS = {"txt", "md", "markdown", "text", "csv", "log"}
 ENG_PREFIXES = ("Engineering Studies/", "04_Projects/")
 MIN_SIGNAL = 0.55        # nearest-neighbour score below which we treat as generic
@@ -174,7 +175,9 @@ def ingest_text(title: str, text: str, origin: str = "paste",
     folder = cls["folder"]
     link = cls.get("link")
     stamp = datetime.now().strftime("%Y-%m-%d")
-    collections = [INDEX] + ([cls["extra_collection"]] if cls.get("extra_collection") else [])
+    # vault_index = everyone; vault_sources = Codex's source-only corpus;
+    # forge_memory = engineering, so Forge cites them.
+    collections = [INDEX, SOURCES] + ([cls["extra_collection"]] if cls.get("extra_collection") else [])
     link_line = f"\n\n_Related: [[{link}]]_\n" if link else ""
 
     # Source note (the cleaned content).
