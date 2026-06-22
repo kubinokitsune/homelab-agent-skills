@@ -5,6 +5,12 @@ python-dotenv>=1.0.0
 PyYAML>=6.0          # Obsidian frontmatter parsing (obsidian_vault skill)
 qdrant-client>=1.7   # vector store (vector_store skill); embeddings via Ollama HTTP
 ddgs>=5.0            # no-key DuckDuckGo backend (web_search skill)
+numpy>=1.24          # embedding clustering + nearest-centroid tagging (vector_store, vault_tagger)
+
+# Optional -- only for vault_tagger's out-of-vocabulary tag discovery (spaCy NER).
+# The core centroid tagger needs only numpy; install these to enable new tags:
+#   pip install spacy && python -m spacy download en_core_web_sm
+# spacy>=3.7
 
 # Only needed if you use the discord_agent base (conversational agents):
 discord.py>=2.0.0

@@ -140,6 +140,32 @@ def delete(collection: str, doc_id: str) -> Result:
 
 
 @skill
+def all_vectors(collection: str) -> Result:
+    """Return ``{doc_id: vector}`` for every point in a collection.
+
+    Used by classifiers that work off the embeddings already stored (e.g. Axiom's
+    nearest-centroid auto-tagger) without re-embedding.
+    """
+    client = _qdrant()
+    if not client.collection_exists(collection):
+        return Result.success({})
+    out: dict[str, list[float]] = {}
+    offset = None
+    while True:
+        batch, offset = client.scroll(
+            collection_name=collection, with_vectors=True, with_payload=True,
+            limit=256, offset=offset,
+        )
+        for p in batch:
+            did = p.payload.get("doc_id")
+            if did is not None:
+                out[did] = p.vector
+        if offset is None:
+            break
+    return Result.success(out)
+
+
+@skill
 def count(collection: str) -> Result:
     """How many entries a collection holds (0 if it doesn't exist)."""
     client = _qdrant()
