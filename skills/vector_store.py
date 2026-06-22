@@ -189,3 +189,72 @@ def find_duplicate_pairs(collection: str, threshold: float = 0.9, max_pairs: int
                 })
     pairs.sort(key=lambda p: -p["score"])
     return Result.success(pairs[:max_pairs])
+
+
+@skill
+def cluster(collection: str, distance_threshold: float = 0.35, min_size: int = 1) -> Result:
+    """Agglomerative (average-linkage) clustering of a collection's vectors.
+
+    Groups semantically similar entries by cosine distance (``1 - similarity``) --
+    e.g. recurring errors that describe the same underlying problem. Two clusters
+    merge while their *average* inter-distance is below ``distance_threshold``
+    (smaller = tighter groups; 0.35 ≈ cosine similarity 0.65). Reuses the vectors
+    already in Qdrant (no re-embedding). Returns clusters ``{doc_ids, size}`` with
+    ``size >= min_size``, largest first. Fine for the modest counts an error log
+    holds; O(n^3) worst case.
+    """
+    import numpy as np
+
+    client = _qdrant()
+    if not client.collection_exists(collection):
+        return Result.success([])
+
+    points, offset = [], None
+    while True:
+        batch, offset = client.scroll(
+            collection_name=collection, with_vectors=True, with_payload=True,
+            limit=256, offset=offset,
+        )
+        points.extend(batch)
+        if offset is None:
+            break
+
+    n = len(points)
+    if n == 0:
+        return Result.success([])
+    doc_ids = [p.payload.get("doc_id") for p in points]
+    if n == 1:
+        return Result.success(
+            [{"doc_ids": [doc_ids[0]], "size": 1}] if min_size <= 1 else []
+        )
+
+    # Cosine distance matrix from L2-normalized vectors.
+    V = np.asarray([p.vector for p in points], dtype=float)
+    norms = np.linalg.norm(V, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    Vn = V / norms
+    dist = 1.0 - (Vn @ Vn.T)
+    np.fill_diagonal(dist, 0.0)
+
+    # Naive average-linkage agglomeration: merge the closest two clusters until
+    # the nearest pair exceeds the threshold.
+    clusters = [[i] for i in range(n)]
+    while len(clusters) > 1:
+        best_d, best = None, None
+        for a in range(len(clusters)):
+            for b in range(a + 1, len(clusters)):
+                d = float(dist[np.ix_(clusters[a], clusters[b])].mean())
+                if best_d is None or d < best_d:
+                    best_d, best = d, (a, b)
+        if best is None or best_d > distance_threshold:
+            break
+        a, b = best
+        clusters[a].extend(clusters[b])
+        del clusters[b]
+
+    out = [
+        {"doc_ids": [doc_ids[i] for i in idxs], "size": len(idxs)}
+        for idxs in clusters if len(idxs) >= min_size
+    ]
+    out.sort(key=lambda c: -c["size"])
+    return Result.success(out)

@@ -160,6 +160,18 @@ class Config:
             return Path(raw)
         return Path(__file__).resolve().parent.parent.parent / "agent-mail"
 
+    @property
+    def error_log_dir(self) -> Path:
+        """Where agents log errors/confusions for pattern clustering (Forge et al.).
+
+        Defaults to ``agent-data/errors/`` beside the skills library -- machine
+        output, outside the Obsidian vault like agent-reports and agent-mail.
+        """
+        raw = self._get("ERROR_LOG_DIR")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "errors"
+
     # -- Pushover: critical alerts that bypass DND -------------------------
 
     @property
