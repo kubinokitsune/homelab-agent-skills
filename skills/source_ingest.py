@@ -91,21 +91,56 @@ def _classify(text: str) -> dict:
     return {"domain": "reference", "folder": REF_SOURCES, "link": None}
 
 
+_PROJ_STOP = {"and", "the", "for", "in", "of", "to", "a", "an"}
+
+
+def _project_match(hint: str) -> tuple[str | None, int]:
+    """Best-matching engineering project note for a hint, by name-token overlap.
+    Returns (project_note_stem, score) where score = distinct project-name words
+    found in the hint. Lets Pipe say "F1", "chemistry calculator", "3D printer"."""
+    low = hint.lower()
+    listed = vault.list_notes(folder="Engineering Studies/Projects")
+    best, best_score = None, 0
+    for rel in (listed.data or []):
+        if "/Sources/" in rel:
+            continue
+        stem = Path(rel).stem
+        toks = {t for t in re.split(r"[^a-z0-9]+", stem.lower())
+                if len(t) > 1 and t not in _PROJ_STOP}
+        matched = {t for t in toks if re.search(rf"\b{re.escape(t)}\b", low)}
+        if len(matched) > best_score:
+            best, best_score = stem, len(matched)
+    return best, best_score
+
+
 def _hint_route(hint: str) -> dict | None:
-    """If the caption names a class or domain, route by that instead of guessing.
-    Lets Pipe steer a source whose *intended* use differs from its content (e.g. a
-    PLA paper that reads like '3D printing' but is for his Physics IA)."""
+    """If the caption names a class or a specific project, route by that instead of
+    guessing. Lets Pipe steer a source whose *intended* use differs from its
+    content (a PLA paper that reads like '3D printing' but is for his Physics IA),
+    or target a project directly ("for the F1 car")."""
     if not hint:
         return None
     low = hint.lower()
+    proj, pscore = _project_match(hint)
+
+    def engineering(link):
+        return {"domain": "engineering", "folder": ENG_SOURCES, "link": link,
+                "extra_collection": "forge_memory"}
+
+    # Strong, multi-word project name ("chemistry calculator", "3D printer").
+    if pscore >= 2:
+        return engineering(proj)
+    # A class word ("physics", "math", "chemistry").
     for cls in SCHOOL_CLASSES:
         if re.search(rf"\b{cls}\b", low):
             subj = cls.upper() if cls == "tok" else cls.capitalize()
             return {"domain": "school", "subject": subj,
                     "folder": f"School/{subj}/Sources", "link": subj}
+    # A weaker single-word project hint ("F1", "ender") -- only after class check.
+    if pscore >= 1:
+        return engineering(proj)
     if re.search(r"\b(engineering|forge|project|pcb|cad|hardware|firmware)\b", low):
-        return {"domain": "engineering", "folder": ENG_SOURCES,
-                "link": "Engineering Projects MOC", "extra_collection": "forge_memory"}
+        return engineering("Engineering Projects MOC")
     if re.search(r"\b(reference|misc|general|other)\b", low):
         return {"domain": "reference", "folder": REF_SOURCES, "link": None}
     return None
