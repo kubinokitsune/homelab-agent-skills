@@ -94,7 +94,9 @@ class DiscordAgent:
         self._history: dict[int, deque] = defaultdict(lambda: deque(maxlen=history_messages))
         self._commands: dict[str, CommandHandler] = {}
         self._startup: StartupHook | None = None
-        self._mail_handler = None  # optional inter-agent message handler
+        self._mail_handler = None       # optional inter-agent message handler
+        self._attachment_handler = None  # optional file-upload handler (Codex)
+        self._plain_handler = None       # optional non-command-text handler (Codex)
 
         intents = discord.Intents.default()
         intents.message_content = True
@@ -114,6 +116,22 @@ class DiscordAgent:
     def on_startup(self, fn: StartupHook) -> StartupHook:
         """Register a coroutine run (in the background) once the bot connects."""
         self._startup = fn
+        return fn
+
+    def on_attachment(self, fn):
+        """Handler for messages that carry file uploads: ``(agent, message) -> None``.
+
+        Fires before the usual text path, so an agent like Codex can ingest
+        dropped files. The handler owns the whole message when attachments exist.
+        """
+        self._attachment_handler = fn
+        return fn
+
+    def on_plain_message(self, fn):
+        """Hook for non-command conversational text: ``(agent, content, message)
+        -> bool``. Return True to fully handle it (skipping the default RAG/chat
+        reply) -- e.g. Codex claiming a pasted URL or long text as a source."""
+        self._plain_handler = fn
         return fn
 
     def on_mail(self, fn):
@@ -235,6 +253,14 @@ class DiscordAgent:
         if not self._addressed(message):
             return
 
+        # File uploads: let an attachment handler (Codex) own the message.
+        if message.attachments and self._attachment_handler is not None:
+            try:
+                await self._attachment_handler(self, message)
+            except Exception:
+                self.log.exception("attachment handler failed")
+            return
+
         content = _MENTION_RE.sub("", message.content).strip()
         self.log.info(
             "handling from=%s channel=%s: %r",
@@ -267,6 +293,14 @@ class DiscordAgent:
             if handler is None:
                 return f"Unknown command `!{cmd}`. Try `!help`."
             return await handler(self, args.strip(), message)
+
+        # Let a plain-message hook (Codex) claim it -- e.g. a pasted URL/source.
+        if self._plain_handler is not None:
+            try:
+                if await self._plain_handler(self, content, message):
+                    return None
+            except Exception:
+                self.log.exception("plain-message handler failed")
 
         # Conversational RAG path.
         context, titles = await self.retrieve_context(content)
