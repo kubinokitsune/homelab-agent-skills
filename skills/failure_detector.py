@@ -83,8 +83,11 @@ def _load_dataset():
 
 ANOMALY_MIN_FRAMES = 80   # frames from clean prints before a baseline can train
 # IsolationForest decision_function: higher = more normal. Banded into quality.
+# FAILURE must sit BELOW the clean distribution's worst (~-0.082 observed), or tall
+# prints under-represented in clean data read as failures. -0.12 gives margin; real
+# spaghetti scores far more negative. Widen this back once clean data covers tall prints.
 _CLEAN_ABOVE = 0.0
-_FAILURE_BELOW = -0.08
+_FAILURE_BELOW = -0.12
 
 
 def _clean_frames():

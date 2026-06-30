@@ -23,6 +23,7 @@ offset into the saved probe value so it survives a restart.
 from __future__ import annotations
 
 import json
+import posixpath
 import urllib.parse
 import urllib.request
 
@@ -35,7 +36,7 @@ _log = get_logger("moonraker")
 # Printer objects we care about in a status poll.
 _QUERY_OBJECTS = (
     "print_stats", "heater_bed", "extruder", "gcode_move",
-    "toolhead", "virtual_sdcard", "display_status", "webhooks",
+    "toolhead", "virtual_sdcard", "display_status", "webhooks", "fan",
 )
 
 
@@ -101,6 +102,13 @@ def status() -> Result:
         "z_offset": round(homing_origin[2], 3),                 # live babystep offset
         "speed_factor": round((gm.get("speed_factor") or 1) * 100),
         "position": [round(p, 2) for p in (s.get("toolhead", {}).get("position") or [0, 0, 0, 0])],
+        # live, runtime-tunable settings (differ from the slicer's baked values)
+        "flow": round((gm.get("extrude_factor") or 1) * 100),    # extrusion multiplier %
+        "fan": round((s.get("fan", {}).get("speed") or 0) * 100),  # part-cooling fan %
+        "pressure_advance": round(s.get("extruder", {}).get("pressure_advance", 0) or 0, 4),
+        "max_accel": round(s.get("toolhead", {}).get("max_accel", 0) or 0),
+        "max_velocity": round(s.get("toolhead", {}).get("max_velocity", 0) or 0),
+        "square_corner_velocity": round(s.get("toolhead", {}).get("square_corner_velocity", 0) or 0, 1),
     })
 
 
@@ -127,7 +135,43 @@ def file_metadata(filename: str) -> Result:
         "estimated_time": m.get("estimated_time"),   # seconds (slicer estimate)
         "layer_count": m.get("layer_count"),
         "filament_total": m.get("filament_total"),    # mm
+        "filament_weight": m.get("filament_weight_total"),  # grams
+        "filament_type": m.get("filament_type"),
+        "object_height": m.get("object_height"),      # mm
+        "layer_height": m.get("layer_height"),         # mm
+        "first_layer_height": m.get("first_layer_height"),
+        "nozzle_diameter": m.get("nozzle_diameter"),
+        "slicer": m.get("slicer"),
+        "thumbnails": m.get("thumbnails") or [],       # [{width,height,relative_path}]
     })
+
+
+def fetch_thumbnail(filename: str, thumbnails: list | None = None) -> Result:
+    """Fetch the largest slicer-embedded preview image (PNG bytes) for a gcode.
+
+    Slicers (Orca/Prusa/Cura) bake a render of the model into the gcode; Moonraker
+    serves it. Pass the metadata's ``thumbnails`` list to avoid a second metadata
+    fetch, or omit it and we'll look it up.
+    """
+    if thumbnails is None:
+        meta = file_metadata(filename)
+        if not meta.ok:
+            return Result.failure(meta.error)
+        thumbnails = meta.data.get("thumbnails") or []
+    if not thumbnails:
+        return Result.failure("no embedded thumbnail in this gcode")
+    best = max(thumbnails, key=lambda t: (t.get("width", 0) * t.get("height", 0)))
+    rel = best.get("relative_path") or best.get("thumbnail_path")
+    if not rel:
+        return Result.failure("thumbnail metadata missing a path")
+    # relative_path is relative to the gcode's own directory.
+    gpath = posixpath.normpath(posixpath.join(posixpath.dirname(filename), rel))
+    url = "/server/files/gcodes/" + urllib.parse.quote(gpath, safe="/")
+    try:
+        with urllib.request.urlopen(_url(url), timeout=8) as resp:
+            return Result.success(resp.read())
+    except Exception as exc:
+        return Result.failure(f"thumbnail fetch failed: {exc}")
 
 
 # -- write: motion / temps ------------------------------------------------
@@ -155,6 +199,29 @@ def home(axes: str = "") -> Result:
 def cooldown() -> Result:
     """Turn off both heaters."""
     return gcode("TURN_OFF_HEATERS")
+
+
+# -- write: live tuning (safe to change mid-print) ------------------------
+
+def set_speed_factor(pct: float) -> Result:
+    """Set print-speed override (M220), percent of programmed feedrate."""
+    return gcode(f"M220 S{max(1, round(pct))}")
+
+
+def set_flow(pct: float) -> Result:
+    """Set extrusion-flow override (M221), percent."""
+    return gcode(f"M221 S{max(1, round(pct))}")
+
+
+def set_fan(pct: float) -> Result:
+    """Set part-cooling fan, percent (0 = off)."""
+    pct = max(0, min(100, pct))
+    return gcode("M107" if pct == 0 else f"M106 S{round(pct * 255 / 100)}")
+
+
+def set_pressure_advance(value: float) -> Result:
+    """Set pressure advance for the active extruder (live tuning)."""
+    return gcode(f"SET_PRESSURE_ADVANCE ADVANCE={value:.4f}")
 
 
 # -- write: print control -------------------------------------------------

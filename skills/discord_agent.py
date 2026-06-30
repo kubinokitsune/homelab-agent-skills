@@ -233,6 +233,16 @@ class DiscordAgent:
             "4. If the context doesn't answer the question, say it isn't in the vault. You may "
             "then use general knowledge, but never dress it up as a note or a real reading."
         )
+        # Ground the model in the commands that ACTUALLY exist, so it stops inventing
+        # commands (e.g. telling Pipe to run a '!setspeed' that doesn't exist).
+        cmds = ["help", "note", "learn", "recall", "tell"] + sorted(self._commands)
+        system += (
+            "\n\n## Your ONLY real commands\n"
+            "Exactly these exist: " + "  ".join(f"`!{c}`" for c in cmds) + "\n"
+            "NEVER invent a command or make up its name/syntax. If Pipe wants something none of "
+            "these do, say so and point him to the closest real one (or `!help`) — do not "
+            "fabricate a command."
+        )
         if context:
             system += (
                 "\n\n## Context retrieved for this question (the only real notes/data you have)\n"
@@ -417,30 +427,85 @@ class DiscordAgent:
         if reply:
             await self._reply_chunked(message, reply)
 
+    # Built-in command names (every agent has these on top of its own).
+    _BUILTIN_CMDS = {"help", "tell", "learn", "recall", "knowledge",
+                     "note", "newnote", "savenote"}
+    # Connectives to drop if they land as a chained command's args ("!snap and !status").
+    _CHAIN_FILLER = {"and", "then", "also", "&", "+", "plus", "->"}
+
+    def _is_known_command(self, cmd: str) -> bool:
+        return cmd in self._BUILTIN_CMDS or cmd in self._commands
+
+    def _split_commands(self, text: str) -> list[tuple[str, str]]:
+        """Split a message into chained commands: '!a x !b y' -> [('a','x'),('b','y')].
+        Each command's args run until the next '!command'."""
+        segs = []
+        for m in re.finditer(r"!([A-Za-z][\w-]*)([^!]*)", text):
+            args = m.group(2).strip()
+            if args.lower() in self._CHAIN_FILLER:
+                args = ""
+            segs.append((m.group(1).lower(), args))
+        return segs
+
+    async def _save_note(self, body: str, message) -> str:
+        """Save a note via the agent's own !note command if it has one, else base."""
+        handler = self._commands.get("note")
+        if handler is not None:
+            return await handler(self, body, message)
+        return await self._cmd_note(body)
+
+    async def _run_command(self, cmd: str, args: str, message) -> str | None:
+        """Execute one '!command' -- built-ins first, then the agent's own."""
+        if cmd == "help":
+            return self.help_text + (
+                "\n**Memory & notes (I grow with use):**\n"
+                "- `!note <text>` -- save a note to your Obsidian vault\n"
+                "- ...or just write the whole note and end the message with `!newnote`\n"
+                "- `!learn <fact>` -- teach me; I keep it, use it, and save it to your vault\n"
+                "- `!recall [topic]` -- recall what I've learned\n"
+                "_Tip: chain commands in one message, e.g. `!status !snap`._")
+        if cmd == "tell":
+            return await self._cmd_tell(args)
+        if cmd == "learn":
+            return await self._cmd_learn(args)
+        if cmd in ("recall", "knowledge"):
+            return await self._cmd_recall(args)
+        if cmd in ("note", "newnote", "savenote"):
+            return await self._save_note(args, message)
+        handler = self._commands.get(cmd)
+        if handler is None:
+            return f"Unknown command `!{cmd}`. Try `!help`."
+        return await handler(self, args, message)
+
     async def _dispatch(self, content: str, conv: deque, message: discord.Message) -> str | None:
-        """Route to a command, or the conversational RAG path."""
-        if content.startswith("!"):
-            cmd, _, args = content[1:].partition(" ")
-            cmd = cmd.lower()
-            if cmd == "help":
-                return self.help_text + (
-                    "\n**Memory & notes (I grow with use):**\n"
-                    "- `!note <text>` -- save a note to your Obsidian vault\n"
-                    "- `!learn <fact>` -- teach me something; I keep it, use it, and save it to your vault\n"
-                    "- `!recall [topic]` -- recall what I've learned")
-            if cmd == "tell":
-                return await self._cmd_tell(args.strip())
-            if cmd == "learn":
-                return await self._cmd_learn(args.strip())
-            if cmd in ("recall", "knowledge"):
-                return await self._cmd_recall(args.strip())
-            # Universal !note for every agent -- unless it defines its own (Forge/Mason).
-            if cmd == "note" and "note" not in self._commands:
-                return await self._cmd_note(args.strip())
-            handler = self._commands.get(cmd)
-            if handler is None:
-                return f"Unknown command `!{cmd}`. Try `!help`."
-            return await handler(self, args.strip(), message)
+        """Route to command(s), a trailing-note, or the conversational RAG path."""
+        stripped = content.strip()
+
+        # Trailing note: write the whole note, then end the message with !newnote.
+        if not stripped.startswith("!"):
+            m = re.match(r"^(.*\S)\s*!(?:newnote|savenote)\s*$",
+                         stripped, re.IGNORECASE | re.DOTALL)
+            if m:
+                return await self._save_note(m.group(1).strip(), message)
+
+        # One or more chained !commands.
+        if stripped.startswith("!"):
+            segs = self._split_commands(stripped)
+            # Only treat as a chain if EVERY part is a real command (so note text
+            # that happens to contain '!' isn't mistaken for a second command).
+            if len(segs) >= 2 and all(self._is_known_command(c) for c, _ in segs):
+                replies = []
+                for c, a in segs:
+                    try:
+                        r = await self._run_command(c, a, message)
+                    except Exception as exc:
+                        self.log.exception("chained command !%s failed", c)
+                        r = f"`!{c}` broke: {exc}"
+                    if r:
+                        replies.append(r)
+                return "\n\n".join(replies) if replies else None
+            cmd, _, args = stripped[1:].partition(" ")
+            return await self._run_command(cmd.lower(), args.strip(), message)
 
         # Let a plain-message hook (Codex) claim it -- e.g. a pasted URL/source.
         if self._plain_handler is not None:
