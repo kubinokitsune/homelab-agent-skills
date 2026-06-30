@@ -103,6 +103,107 @@ class Config:
         """Default Ollama chat model for conversational agents (override per-agent)."""
         return self._get("DEFAULT_AGENT_MODEL", "llama3.1:8b")  # type: ignore[return-value]
 
+    @property
+    def ollama_num_threads(self) -> int:
+        """CPU threads Ollama should use per request.
+
+        MUST match the cores the Ollama container is pinned to. On this box the
+        agents LXC is cpuset 0-2 (3 cores); leaving Ollama at its auto-detected 4
+        threads oversubscribes the cpuset and triggers CFS throttle-stalls that
+        cut inference ~16x (0.6 vs 9.6 tok/s). Default 3 to match.
+        """
+        return int(self._get("OLLAMA_NUM_THREADS", "3"))  # type: ignore[arg-type]
+
+    # -- Moonraker / 3D printer (Mason) ------------------------------------
+
+    @property
+    def moonraker_url(self) -> str:
+        """Base URL of Moonraker (Klipper API). Mason talks to the printer LXC.
+
+        Defaults to localhost; on the server set MOONRAKER_URL to the printer
+        container, e.g. http://192.168.1.136:7125.
+        """
+        return self._get("MOONRAKER_URL", "http://127.0.0.1:7125")  # type: ignore[return-value]
+
+    @property
+    def camera_snapshot_url(self) -> str:
+        """Single-frame JPEG endpoint for first-layer vision.
+
+        ustreamer/Crowsnest expose ``/snapshot``. Defaults to the host ustreamer.
+        """
+        return self._get("CAMERA_SNAPSHOT_URL", "http://192.168.1.135:8080/snapshot")  # type: ignore[return-value]
+
+    @property
+    def vision_model(self) -> str:
+        """Local Ollama vision model Mason uses to look at prints. Default moondream."""
+        return self._get("VISION_MODEL", "moondream")  # type: ignore[return-value]
+
+    @property
+    def failure_model_path(self) -> Path:
+        """Where the trained print-failure classifier is saved."""
+        raw = self._get("FAILURE_MODEL_PATH")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "failure_detector.joblib"
+
+    @property
+    def print_anomaly_model_path(self) -> Path:
+        """Where the print-quality anomaly model (trained on clean prints) is saved."""
+        raw = self._get("PRINT_ANOMALY_MODEL_PATH")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "print_anomaly.joblib"
+
+    @property
+    def train_min_good(self) -> int:
+        """Labeled 'good' prints needed before the failure detector is trainable."""
+        return int(self._get("TRAIN_MIN_GOOD", "10"))  # type: ignore[arg-type]
+
+    @property
+    def train_min_bad(self) -> int:
+        """Labeled 'bad' (failed) prints needed -- the scarce, critical class."""
+        return int(self._get("TRAIN_MIN_BAD", "5"))  # type: ignore[arg-type]
+
+    @property
+    def print_dataset_dir(self) -> Path:
+        """Where Mason saves labeled print frames to train a failure detector.
+
+        Defaults to ``agent-data/print-dataset/`` beside the skills library --
+        machine output, outside the Obsidian vault.
+        """
+        raw = self._get("PRINT_DATASET_DIR")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "print-dataset"
+
+    # -- Server monitoring (Hermes) ----------------------------------------
+
+    @property
+    def server_host(self) -> str:
+        """Proxmox host IP Hermes manages (SSH target for host/container ops)."""
+        return self._get("SERVER_HOST", "192.168.1.135")  # type: ignore[return-value]
+
+    @property
+    def server_ssh_key(self) -> str:
+        """SSH key Hermes uses to reach the Proxmox host."""
+        return self._get("SERVER_SSH_KEY", "/root/.ssh/hermes_host")  # type: ignore[return-value]
+
+    @property
+    def metrics_path(self) -> Path:
+        """Rolling JSONL of server metrics Hermes records for anomaly detection."""
+        raw = self._get("METRICS_PATH")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "server_metrics.jsonl"
+
+    @property
+    def anomaly_model_path(self) -> Path:
+        """Where Hermes's trained Isolation-Forest anomaly model is saved."""
+        raw = self._get("ANOMALY_MODEL_PATH")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "anomaly_detector.joblib"
+
     # -- File ops: allowlisted server roots --------------------------------
 
     @property
@@ -181,6 +282,14 @@ class Config:
         if raw:
             return Path(raw)
         return Path(__file__).resolve().parent.parent.parent / "agent-data" / "forge_parts.json"
+
+    @property
+    def flashcards_path(self) -> Path:
+        """Chiron's spaced-repetition flashcard store (JSON)."""
+        raw = self._get("FLASHCARDS_PATH")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "flashcards.json"
 
     @property
     def calendar_path(self) -> Path:

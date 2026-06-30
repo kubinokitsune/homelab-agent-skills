@@ -47,6 +47,7 @@ import aiohttp
 import discord
 
 from skills import agent_mail
+from skills import obsidian_vault as vault
 from skills import vector_store as vs
 from skills.config import config
 from skills.logging import get_logger, set_agent
@@ -77,6 +78,8 @@ class DiscordAgent:
         context_k: int = 4,
         min_score: float = 0.4,
         auto_channel_ids: list[int] | None = None,
+        rag_exclude_folders: list[str] | None = None,
+        rag_include_folders: list[str] | None = None,
     ) -> None:
         self.name = name
         # Channels where the agent answers EVERY (human) message, no @mention
@@ -84,11 +87,22 @@ class DiscordAgent:
         self.auto_channel_ids = set(auto_channel_ids or [])
         self.system_prompt = system_prompt
         self.memory_collection = memory_collection
+        # Each agent's own growing knowledge: facts it's taught + things it learns.
+        # RAG'd on every chat, so the agent gets tailored to how it's actually used.
+        self.learned_collection = f"{name.lower()}_memory"
+        # Where this agent writes notes in the vault (one tidy place per agent),
+        # so anything you ask it to save becomes real markdown you can open.
+        self.notes_folder = f"Agent Notes/{name}"
         self.help_text = help_text or f"**{name}** -- @mention or DM me a question."
         self.model = model or config.default_model
         self.keep_alive = keep_alive
         self.context_k = context_k
         self.min_score = min_score
+        # Vault-folder scoping for RAG, so e.g. Mason can't lead a printing answer
+        # with a Spanish-class film note. include wins if set (allowlist: keep ONLY
+        # these folders); otherwise exclude is a blocklist. Paths are doc_id prefixes.
+        self.rag_exclude_folders = tuple(rag_exclude_folders or ())
+        self.rag_include_folders = tuple(rag_include_folders or ())
 
         set_agent(name)
         self.log = get_logger(name.lower())
@@ -155,19 +169,49 @@ class DiscordAgent:
 
     # -- core capabilities (usable from command handlers) ------------------
 
+    def _note_allowed(self, doc_id: str) -> bool:
+        """Whether a note's folder is in scope for this agent's RAG. An allowlist
+        (rag_include_folders) wins if set; else a blocklist (rag_exclude_folders).
+        Non-vault doc_ids (e.g. learned 'taught-...') are always allowed."""
+        if self.rag_include_folders:
+            return doc_id.startswith(self.rag_include_folders) or not doc_id.endswith(".md")
+        if self.rag_exclude_folders:
+            return not doc_id.startswith(self.rag_exclude_folders)
+        return True
+
     async def retrieve_context(self, question: str) -> tuple[str, list[str]]:
-        """RAG: return (context_block, cited_titles) from this agent's collection."""
-        res = await asyncio.to_thread(vs.query, self.memory_collection, question, self.context_k)
-        if not res.ok:
-            self.log.warning("RAG query failed: %s", res.error)
-            return "", []
-        hits = [h for h in res.data if (h.get("score") or 0) >= self.min_score]
+        """RAG from the agent's normal collection AND its own learned knowledge.
+
+        Over-fetches, drops notes in excluded folders (e.g. School/ for project
+        agents), then keeps the top ``context_k`` -- so filtering can't leave the
+        agent staring at off-domain notes just because they scored a hair higher.
+        """
+        cols = [self.memory_collection]
+        if self.learned_collection and self.learned_collection != self.memory_collection:
+            cols.append(self.learned_collection)
+        fetch = max(self.context_k * 4, 16)  # over-fetch to survive folder filtering
         blocks, titles = [], []
-        for h in hits:
-            title = h["payload"].get("title") or h["doc_id"]
-            text = (h["payload"].get("text") or "")[:600]
-            blocks.append(f"### {title}\n{text}")
-            titles.append(title)
+        for col in cols:
+            try:
+                res = await asyncio.to_thread(vs.query, col, question, fetch)
+            except Exception:
+                continue
+            if not res.ok:
+                self.log.warning("RAG query failed (%s): %s", col, res.error)
+                continue
+            kept = 0
+            for h in res.data:
+                if (h.get("score") or 0) < self.min_score:
+                    continue
+                if not self._note_allowed(h["doc_id"]):
+                    continue
+                title = h["payload"].get("title") or h["doc_id"]
+                text = (h["payload"].get("text") or "")[:600]
+                blocks.append(f"### {title}\n{text}")
+                titles.append(title)
+                kept += 1
+                if kept >= self.context_k:
+                    break
         return "\n\n".join(blocks), titles
 
     async def ask(self, question: str, context: str = "", history: list[dict] | None = None) -> str:
@@ -175,12 +219,28 @@ class DiscordAgent:
         # Always ground the model in the real current date, so it doesn't treat
         # months-old notes as upcoming ("Copa 506 coming up" written in March).
         system = f"Today's date is {date.today():%A, %Y-%m-%d}.\n\n" + self.system_prompt
+        system += (
+            "\n\n## Honesty rules (do not break these)\n"
+            "1. Refer to a note or file ONLY by the exact title/path shown in the context "
+            "below. Never invent, guess, or reword a note or file name — if it isn't listed, "
+            "you don't have it.\n"
+            "2. Never state a specific live reading about Pipe's hardware (printer temps, print "
+            "progress, server stats, status) unless it appears in the context below. If you "
+            "don't have the real number, say so and point to the command that shows it.\n"
+            "3. You act ONLY through `!` commands. In plain chat you cannot save notes, change "
+            "settings, or run anything — so never claim you did. If asked to save something, "
+            "tell Pipe the exact `!` command.\n"
+            "4. If the context doesn't answer the question, say it isn't in the vault. You may "
+            "then use general knowledge, but never dress it up as a note or a real reading."
+        )
         if context:
             system += (
-                "\n\n## Relevant notes from Pipe's vault\n" + context +
-                "\n\nUse these when relevant and name the note you drew from. If "
-                "they don't cover the question, rely on what you know and say so."
+                "\n\n## Context retrieved for this question (the only real notes/data you have)\n"
+                + context +
+                "\n\nName the exact note or value you used."
             )
+        else:
+            system += "\n\n## Context\nNothing relevant was retrieved for this question."
         messages = [{"role": "system", "content": system}]
         if history:
             messages.extend(history)
@@ -190,6 +250,9 @@ class DiscordAgent:
             "messages": messages,
             "stream": False,
             "keep_alive": self.keep_alive,
+            # Match Ollama's threads to the container's cpuset, or CFS throttling
+            # cripples inference (~16x slower). See config.ollama_num_threads.
+            "options": {"num_thread": config.ollama_num_threads},
         }
         async with aiohttp.ClientSession() as session:
             async with session.post(f"{config.ollama_host}/api/chat", json=payload) as resp:
@@ -242,6 +305,68 @@ class DiscordAgent:
             return "Usage: `!tell <Agent> <message>` -- e.g. `!tell Axiom run a duplicate scan`."
         res = await asyncio.to_thread(agent_mail.send, to.capitalize(), self.name, body)
         return f"Message on its way to {to.capitalize()}." if res.ok else f"Couldn't send: {res.error}"
+
+    async def _write_vault_note(self, text: str, kind: str) -> str | None:
+        """Write a real markdown note to the vault (synced to the laptop), embed it
+        so it's searchable, and tell Axiom. Returns the path, or None on failure.
+
+        This is how conversations turn into real, current data Pipe can actually
+        open -- not just embeddings only the agents can see."""
+        from datetime import datetime as _dt
+        stamp = _dt.now().strftime("%Y-%m-%d %H%M%S")
+        path = f"{self.notes_folder}/{stamp}.md"
+        w = await asyncio.to_thread(
+            vault.write_note, path, text,
+            {"type": f"{self.name.lower()}-note", "kind": kind, "tags": [self.name.lower()]})
+        if not w.ok:
+            self.log.warning("vault note write failed: %s", w.error)
+            return None
+        try:  # embed into the shared vault index so it's immediately findable
+            await asyncio.to_thread(
+                vs.upsert, "vault_index", path, text,
+                {"title": f"{self.name} note {stamp}", "folder": self.notes_folder})
+        except Exception:
+            self.log.exception("vault note embed failed")
+        try:  # let the librarian fold it into the Agent Notes MOC
+            await asyncio.to_thread(agent_mail.send, "Axiom", self.name, "new vault note saved", path)
+        except Exception:
+            pass
+        return path
+
+    async def _cmd_note(self, text: str) -> str:
+        """Built-in: ``!note <text>`` -- save a note to the Obsidian vault."""
+        if not text:
+            return "Usage: `!note <text>` — I'll save it to your Obsidian vault."
+        path = await self._write_vault_note(text, "note")
+        return (f"📝 Saved to your vault → `{path}` (syncs to your laptop; Axiom notified)."
+                if path else "Couldn't save the note to the vault — check the logs.")
+
+    async def _cmd_learn(self, fact: str) -> str:
+        """Built-in: ``!learn <fact>`` -- remember a fact AND save it to the vault."""
+        if not fact:
+            return "Usage: `!learn <fact>` — tell me something to remember and I'll keep it."
+        import uuid
+        res = await asyncio.to_thread(
+            vs.upsert, self.learned_collection, f"taught-{uuid.uuid4().hex[:8]}", fact,
+            {"title": fact[:60], "kind": "taught"})
+        if not res.ok:
+            return f"Couldn't store that: {res.error}"
+        path = await self._write_vault_note(fact, "taught")
+        where = f" and saved it to your vault → `{path}`" if path else ""
+        return f"🧠 Got it — I'll remember that and use it{where}."
+
+    async def _cmd_recall(self, topic: str) -> str:
+        """Built-in: ``!recall [topic]`` -- search/recall what this agent has learned."""
+        if topic:
+            res = await asyncio.to_thread(vs.query, self.learned_collection, topic, 5)
+            hits = [h for h in (res.data or []) if (h.get("score") or 0) >= 0.3]
+            if not hits:
+                return f"I haven't learned anything about '{topic}' yet — teach me with `!learn`."
+            return f"🧠 **What I've learned about '{topic}':**\n" + "\n".join(
+                f"- {h['payload'].get('text', '')[:160]}" for h in hits)
+        res = await asyncio.to_thread(vs.count, self.learned_collection)
+        return (f"🧠 I've learned **{res.data if res.ok else 0}** things so far. "
+                "`!recall <topic>` to search · `!learn <fact>` to teach me.")
 
     def _addressed(self, message: discord.Message) -> bool:
         """True if this message is for us: DM, @mention, role ping, or any
@@ -298,9 +423,20 @@ class DiscordAgent:
             cmd, _, args = content[1:].partition(" ")
             cmd = cmd.lower()
             if cmd == "help":
-                return self.help_text
+                return self.help_text + (
+                    "\n**Memory & notes (I grow with use):**\n"
+                    "- `!note <text>` -- save a note to your Obsidian vault\n"
+                    "- `!learn <fact>` -- teach me something; I keep it, use it, and save it to your vault\n"
+                    "- `!recall [topic]` -- recall what I've learned")
             if cmd == "tell":
                 return await self._cmd_tell(args.strip())
+            if cmd == "learn":
+                return await self._cmd_learn(args.strip())
+            if cmd in ("recall", "knowledge"):
+                return await self._cmd_recall(args.strip())
+            # Universal !note for every agent -- unless it defines its own (Forge/Mason).
+            if cmd == "note" and "note" not in self._commands:
+                return await self._cmd_note(args.strip())
             handler = self._commands.get(cmd)
             if handler is None:
                 return f"Unknown command `!{cmd}`. Try `!help`."

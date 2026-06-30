@@ -18,10 +18,16 @@ All paths use ``.md`` implicitly -- pass it or omit it, both work.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 from pathlib import Path
 
 import yaml
+
+
+def new_uid() -> str:
+    """A short, stable note identifier (8 hex chars) -- survives renames/moves."""
+    return uuid.uuid4().hex[:8]
 
 from skills.config import config
 from skills.errors import skill
@@ -107,8 +113,10 @@ def write_note(
     """Create a note, making parent folders as needed.
 
     Refuses to overwrite an existing note unless ``overwrite=True`` -- protects
-    the existing vault from an agent clobbering real content. Stamps ``created``
-    (only on first write) and ``updated`` into the frontmatter automatically.
+    the existing vault from an agent clobbering real content. Stamps a stable
+    ``uid`` (generated once, preserved across every rewrite/rename/move),
+    ``created`` (first write), and ``updated`` automatically -- so every agent
+    note is consistently identifiable and Axiom-organizable.
     """
     target = _resolve(path)
     existed = target.exists()
@@ -117,14 +125,50 @@ def write_note(
 
     meta = dict(frontmatter or {})
     today = date.today().isoformat()
+    uid = meta.pop("uid", None)
+    if existed:
+        # Carry the stable uid + created forward so an overwrite never wipes them.
+        try:
+            old_meta, _ = _split_frontmatter(target.read_text(encoding="utf-8"))
+            uid = uid or old_meta.get("uid")
+            if "created" not in meta and old_meta.get("created"):
+                meta["created"] = old_meta["created"]
+        except Exception:
+            pass
     if not existed:
         meta.setdefault("created", today)
-    meta["updated"] = today
+    # uid leads the frontmatter; generated once if the note has never had one.
+    meta = {"uid": uid or new_uid(), **meta, "updated": today}
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(_compose(meta, body), encoding="utf-8")
     log.info("wrote note %s%s", _relativize(target), " (overwrote)" if existed else "")
     return Result.success({"path": _relativize(target), "overwritten": existed})
+
+
+@skill
+def ensure_uids(subfolder: str = "") -> Result:
+    """Backfill a stable ``uid`` onto every note that lacks one. Idempotent.
+
+    Non-destructive: only prepends a uid to the frontmatter, leaving the body and
+    all existing fields untouched. Safe to run on the whole vault (incl. School/).
+    """
+    root = _resolve(subfolder, as_dir=True) if subfolder else config.vault_path.resolve()
+    scanned = added = 0
+    for p in root.rglob("*.md"):
+        if any(part.startswith(".") for part in p.relative_to(config.vault_path).parts):
+            continue  # skip .obsidian/.trash etc.
+        scanned += 1
+        try:
+            meta, body = _split_frontmatter(p.read_text(encoding="utf-8"))
+            if meta.get("uid"):
+                continue
+            p.write_text(_compose({"uid": new_uid(), **meta}, body), encoding="utf-8")
+            added += 1
+        except Exception:
+            continue
+    log.info("ensure_uids: %d/%d notes got a new uid", added, scanned)
+    return Result.success({"scanned": scanned, "added": added})
 
 
 @skill

@@ -306,6 +306,55 @@ def build_mocs(main_folders: list[str], dry_run: bool, model: str | None) -> tup
     return mocs, subcats
 
 
+# Note types stamped by agents (vs. Pipe's own notes) -- the ones to catalogue.
+AGENT_NOTE_TYPES = {
+    "source", "source-synthesis", "forge-note", "shopping-list", "build-log",
+    "build-tracker", "forge-review", "forge-daily",
+}
+
+
+def build_agent_moc(dry_run: bool) -> int:
+    """Catalogue agent-created notes by kind into one connected MOC (additive).
+
+    Every agent note now carries a consistent ``type`` + stable ``uid``, so this
+    groups them into named categories in a single index that links them together
+    -- one place for Pipe/Codex/Axiom to find anything an agent made.
+    """
+    cats: dict[str, list] = defaultdict(list)
+    listed = vault.list_notes()
+    if not listed.ok:
+        return 0
+    for rel in listed.data:
+        if rel.startswith(_MOC_SKIP_PREFIXES):
+            continue
+        n = vault.read_note(rel)
+        if not n.ok:
+            continue
+        t = n.data["frontmatter"].get("type")
+        # Catalogue known agent note types AND any "<agent>-note" (every agent can
+        # now write notes via the shared base, e.g. scout-note, chiron-note).
+        if t in AGENT_NOTE_TYPES or (t and t.endswith("-note")):
+            cats[t].append((_title(rel), n.data["frontmatter"].get("uid")))
+    total = sum(len(v) for v in cats.values())
+    if total == 0:
+        return 0
+    lines = ["# Agent Notes MOC", "",
+             "_Notes your agents created, grouped by kind and cross-indexed. "
+             "Auto-maintained by Axiom; each entry shows its stable `uid`._", ""]
+    for t in sorted(cats):
+        lines.append(f"## {t}  ({len(cats[t])})")
+        for title, uid in sorted(cats[t]):
+            lines.append(f"- [[{title}]]" + (f"  `{uid}`" if uid else ""))
+        lines.append("")
+    if not dry_run:
+        vault.write_note(f"{MOC_FOLDER}/Agent Notes MOC", "\n".join(lines),
+                         {"title": "Agent Notes MOC", "type": "moc",
+                          "tags": ["moc", "agents", "auto"]}, overwrite=True)
+    log.info("%sagent-notes MOC: %d notes across %d categories",
+             "[dry] " if dry_run else "", total, len(cats))
+    return total
+
+
 # -- orchestrator ----------------------------------------------------------
 
 @skill
@@ -318,8 +367,15 @@ def organize(
     """Run the full nightly librarian pass. Each stage is isolated so one failure
     doesn't sink the rest. Returns counts for the morning digest."""
     folders = main_folders if main_folders is not None else DEFAULT_MOC_FOLDERS
-    summary = {"merged": [], "connected": 0, "mocs": 0, "subcats": 0, "dry_run": dry_run}
+    summary = {"merged": [], "connected": 0, "mocs": 0, "subcats": 0,
+               "agent_notes": 0, "dry_run": dry_run}
 
+    # Stage 0: make sure every note has a stable uid before anything moves it.
+    if not dry_run:
+        try:
+            vault.ensure_uids()
+        except Exception:
+            log.exception("uid backfill failed")
     try:
         summary["merged"] = merge_duplicates(collection, dry_run, model)
     except Exception:
@@ -332,6 +388,10 @@ def organize(
         summary["mocs"], summary["subcats"] = build_mocs(folders, dry_run, model)
     except Exception:
         log.exception("MOC stage failed")
+    try:
+        summary["agent_notes"] = build_agent_moc(dry_run)
+    except Exception:
+        log.exception("agent-notes MOC stage failed")
 
     log.info(
         "organize done%s: merged=%d connected=%d mocs=%d subcats=%d",

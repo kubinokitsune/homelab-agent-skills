@@ -52,7 +52,9 @@ def index(collection: str, folders: list[str] | None = None) -> Result:
             title = Path(rel_path).stem
             top = folder or (rel_path.split("/")[0] if "/" in rel_path else "(root)")
             text = f"{title}\n\n{body}"[:_MAX_EMBED_CHARS]
-            r = vs.upsert(collection, rel_path, text, payload={"title": title, "folder": top})
+            r = vs.upsert(collection, rel_path, text,
+                          payload={"title": title, "folder": top,
+                                   "uid": note.data["frontmatter"].get("uid")})
             if r.ok:
                 indexed += 1
     log.info("indexed %d notes into '%s'", indexed, collection)
@@ -76,7 +78,7 @@ def index_one(collection: str, rel_path: str) -> Result:
         return Result.failure(f"note '{rel_path}' is empty -- nothing to index")
     title = Path(rel_path).stem
     top = rel_path.split("/")[0] if "/" in rel_path else "(root)"
-    payload = {"title": title, "folder": top}
+    payload = {"title": title, "folder": top, "uid": note.data["frontmatter"].get("uid")}
     text = f"{title}\n\n{body}"[:_MAX_EMBED_CHARS]
     r = vs.upsert(collection, rel_path, text, payload=payload)
     if not r.ok:
