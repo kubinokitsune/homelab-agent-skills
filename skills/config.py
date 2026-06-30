@@ -197,6 +197,14 @@ class Config:
         return Path(__file__).resolve().parent.parent.parent / "agent-data" / "server_metrics.jsonl"
 
     @property
+    def tuning_path(self) -> Path:
+        """Mason's ledger of print-quality recommendations (pending -> applied)."""
+        raw = self._get("TUNING_PATH")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "print_tuning.json"
+
+    @property
     def anomaly_model_path(self) -> Path:
         """Where Hermes's trained Isolation-Forest anomaly model is saved."""
         raw = self._get("ANOMALY_MODEL_PATH")

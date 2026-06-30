@@ -79,6 +79,41 @@ def host_health() -> Result:
         return Result.failure(f"couldn't parse host health: {exc}")
 
 
+def free_disk() -> Result:
+    """Reclaim host disk safely: vacuum old journals + clear the apt cache. Returns
+    MB freed and the disk % afterward. No user data is touched."""
+    def _used() -> int | None:
+        out, _ = _ssh("df -B1 / | tail -1 | awk '{print $3}'")
+        try:
+            return int(out.strip())
+        except ValueError:
+            return None
+    before = _used()
+    _ssh("journalctl --vacuum-time=3d >/dev/null 2>&1; "
+         "apt-get -y clean >/dev/null 2>&1; "
+         "pct exec 100 -- journalctl --vacuum-time=3d >/dev/null 2>&1", timeout=90)
+    after = _used()
+    pct, _ = _ssh("df / | tail -1 | awk '{print $5}'")
+    freed = round((before - after) / 1e6) if (before is not None and after is not None) else 0
+    return Result.success({"freed_mb": max(0, freed), "after_pct": pct.strip() or "?"})
+
+
+def top_memory(n: int = 4) -> Result:
+    """Top memory-consuming processes on the host (container procs show too)."""
+    out, rc = _ssh(f"ps -eo pmem,comm --sort=-pmem --no-headers | head -{int(n)}")
+    if rc != 0:
+        return Result.failure(f"ps failed: {out}")
+    procs = []
+    for line in out.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            try:
+                procs.append({"name": parts[1].strip(), "pct": float(parts[0])})
+            except ValueError:
+                continue
+    return Result.success(procs)
+
+
 def hardware() -> Result:
     """Real hardware specs read live from the host -- so Hermes never guesses."""
     def q(cmd: str) -> str:

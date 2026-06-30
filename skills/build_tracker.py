@@ -58,6 +58,7 @@ def start(name: str, steps: list[str] | None = None) -> Result:
     d = _load()
     d["builds"][name] = {
         "created": date.today().isoformat(),
+        "updated": date.today().isoformat(),
         "steps": [{"text": s.strip(), "done": False} for s in (steps or []) if s.strip()],
     }
     d["active"] = name
@@ -97,6 +98,7 @@ def add_step(text: str) -> Result:
     if not name:
         return Result.failure("no active build -- start one first")
     d["builds"][name]["steps"].append({"text": text, "done": False})
+    d["builds"][name]["updated"] = date.today().isoformat()
     _save(d)
     return Result.success(_with_name(d["builds"][name], name))
 
@@ -116,6 +118,7 @@ def mark_done(index: int | None = None) -> Result:
     if not 0 <= index < len(steps):
         return Result.failure("step number out of range")
     steps[index]["done"] = True
+    d["builds"][name]["updated"] = date.today().isoformat()
     _save(d)
     return Result.success({"name": name, "completed": steps[index]["text"], "steps": steps})
 
