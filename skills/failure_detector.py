@@ -90,6 +90,13 @@ _CLEAN_ABOVE = 0.0
 _FAILURE_BELOW = -0.12
 
 
+def _score_to_pct(score: float) -> int:
+    """Map the raw anomaly score to an intuitive 0-100 'print health %': anchored so
+    the failure line reads ~30% and the clean line ~70% (perfect clean ~100%)."""
+    pct = 30.0 + (score - _FAILURE_BELOW) * (70.0 - 30.0) / (_CLEAN_ABOVE - _FAILURE_BELOW)
+    return int(max(0, min(100, round(pct))))
+
+
 def _clean_frames():
     """Feature matrix from CLEAN/good-labeled prints -- the 'normal' class."""
     X = []
@@ -125,6 +132,27 @@ def train_anomaly() -> Result:
     return Result.success({"trained_on": len(X)})
 
 
+def anomaly_readiness() -> Result:
+    """Clean-frame count vs the minimum to (re)train the anomaly model -- cheap (no
+    feature extraction), just counts .jpg in good-labeled prints."""
+    root = config.print_dataset_dir
+    n = 0
+    if root.is_dir():
+        for s in root.iterdir():
+            if not s.is_dir():
+                continue
+            try:
+                if json.loads((s / "meta.json").read_text()).get("label") == "good":
+                    n += len(list(s.glob("*.jpg")))
+            except Exception:
+                continue
+    return Result.success({
+        "clean_frames": n, "need": ANOMALY_MIN_FRAMES,
+        "ready": n >= ANOMALY_MIN_FRAMES,
+        "trained": config.print_anomaly_model_path.exists(),
+    })
+
+
 def assess(image_bytes: bytes) -> Result:
     """Graded read of a frame -> {bucket: clean|imperfect|failure, score}.
 
@@ -141,7 +169,7 @@ def assess(image_bytes: bytes) -> Result:
     clf = joblib.load(p)["model"]
     s = float(clf.decision_function(feat.reshape(1, -1))[0])
     bucket = "clean" if s >= _CLEAN_ABOVE else ("imperfect" if s >= _FAILURE_BELOW else "failure")
-    return Result.success({"bucket": bucket, "score": round(s, 3)})
+    return Result.success({"bucket": bucket, "score": round(s, 3), "pct": _score_to_pct(s)})
 
 
 def train(model_path: Path | None = None) -> Result:

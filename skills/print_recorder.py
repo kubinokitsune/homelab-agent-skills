@@ -22,6 +22,7 @@ Layout::
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -94,6 +95,46 @@ def end_session(session: str, outcome: str) -> Result:
         return Result.success(meta)
     except Exception as exc:
         return Result.failure(f"end_session failed: {exc}")
+
+
+def _open_sessions_for(filename: str, max_age_hours: float = 72) -> list:
+    """Still-open (un-ended) sessions for this file, as (frame_count, path), newest data first."""
+    cands = []
+    now = datetime.now().timestamp()
+    for s in _root().iterdir():
+        if not s.is_dir():
+            continue
+        try:
+            m = json.loads((s / "meta.json").read_text())
+        except Exception:
+            continue
+        if m.get("filename") != filename or m.get("ended"):
+            continue
+        if (now - s.stat().st_mtime) / 3600 <= max_age_hours:
+            cands.append((len(list(s.glob("*.jpg"))), s))
+    cands.sort()
+    return cands
+
+
+def open_session_for(filename: str) -> Result:
+    """The richest still-open session for this file -> resume it after a Mason/server
+    restart instead of starting a duplicate. Returns the path, or None."""
+    cands = _open_sessions_for(filename)
+    return Result.success(str(cands[-1][1]) if cands else None)
+
+
+def dedupe_open(filename: str) -> Result:
+    """Keep only the richest still-open session for a file; remove the rest. Cleans
+    up the duplicates a string of restarts leaves behind for one ongoing print."""
+    cands = _open_sessions_for(filename)
+    removed = 0
+    for _, s in cands[:-1]:          # all but the richest
+        try:
+            shutil.rmtree(s)
+            removed += 1
+        except Exception:
+            pass
+    return Result.success({"removed": removed, "kept": cands[-1][1].name if cands else None})
 
 
 def label_last(label: str) -> Result:
