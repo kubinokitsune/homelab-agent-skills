@@ -16,6 +16,7 @@ Reaches the host over SSH (config.server_ssh_key), like server_monitor.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections import Counter
@@ -25,6 +26,10 @@ from skills.logging import get_logger
 from skills.result import Result
 
 _log = get_logger("security_monitor")
+
+# IPs Warden must NEVER ban -- the hard safety that stops it locking Pipe out.
+# LAN + loopback + Tailscale (100.64.0.0/10) + any WARDEN_TRUSTED_IPS he sets.
+_TRUSTED_ENV = [x.strip() for x in (os.getenv("WARDEN_TRUSTED_IPS") or "").split(",") if x.strip()]
 
 _ACCEPT = re.compile(r"Accepted (\w+) for (\S+) from (\d+\.\d+\.\d+\.\d+)")
 _FAIL = re.compile(r"Failed password for (?:invalid user )?(\S+) from (\d+\.\d+\.\d+\.\d+)")
@@ -45,6 +50,43 @@ def _host(cmd: str, timeout: float = 20) -> tuple[str, int]:
 def _is_private(ip: str) -> bool:
     return (ip.startswith("192.168.") or ip.startswith("10.")
             or any(ip.startswith(f"172.{i}.") for i in range(16, 32)) or ip.startswith("127."))
+
+
+def _is_trusted(ip: str) -> bool:
+    """Never-ban list: LAN + loopback + Tailscale CGNAT (100.64.0.0/10) + configured IPs."""
+    if _is_private(ip) or ip in _TRUSTED_ENV:
+        return True
+    if ip.startswith("100."):  # Tailscale 100.64.0.0/10
+        try:
+            return 64 <= int(ip.split(".")[1]) <= 127
+        except (IndexError, ValueError):
+            return False
+    return False
+
+
+def _banlist_path():
+    return config.banlist_path
+
+
+def _load_bans() -> set:
+    p = _banlist_path()
+    if not p.exists():
+        return set()
+    try:
+        return {ln.strip() for ln in p.read_text().splitlines() if ln.strip()}
+    except Exception:
+        return set()
+
+
+def _save_bans(ips: set) -> None:
+    p = _banlist_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\n".join(sorted(ips)) + "\n")
+
+
+def stored_bans() -> Result:
+    """The IPs Warden has banned (source of truth, survives reboot)."""
+    return Result.success(sorted(_load_bans()))
 
 
 def auth_events(since: str = "-24h") -> Result:
@@ -106,10 +148,56 @@ def listening() -> Result:
 
 
 def ban(ip: str) -> Result:
-    """Drop all traffic from an IP at the host firewall (idempotent)."""
+    """Drop all traffic from an IP at the host firewall (idempotent + persisted).
+    REFUSES trusted IPs (LAN / Tailscale / you) so it can never lock you out."""
     if not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip):
         return Result.failure(f"'{ip}' isn't a valid IPv4 address")
+    if _is_trusted(ip):
+        return Result.failure(f"refusing to ban {ip} — it's a trusted LAN/Tailscale address")
     out, rc = _host(f"iptables -C INPUT -s {ip} -j DROP 2>/dev/null || iptables -A INPUT -s {ip} -j DROP")
     if rc != 0:
         return Result.failure(f"ban failed: {out}")
+    bans = _load_bans()
+    bans.add(ip)
+    _save_bans(bans)
     return Result.success(f"banned {ip}")
+
+
+def unban(ip: str) -> Result:
+    """Remove the firewall drop for an IP and forget it."""
+    if not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", ip):
+        return Result.failure(f"'{ip}' isn't a valid IPv4 address")
+    _host(f"iptables -D INPUT -s {ip} -j DROP 2>/dev/null")  # ignore "rule not found"
+    bans = _load_bans()
+    bans.discard(ip)
+    _save_bans(bans)
+    return Result.success(f"unbanned {ip}")
+
+
+def reapply_bans() -> Result:
+    """Re-add every stored ban at the firewall (iptables rules are lost on reboot).
+    Warden calls this on startup so bans survive a host restart."""
+    applied = 0
+    bans = _load_bans()
+    for ip in bans:
+        if _is_trusted(ip):
+            continue
+        _, rc = _host(f"iptables -C INPUT -s {ip} -j DROP 2>/dev/null || iptables -A INPUT -s {ip} -j DROP")
+        applied += 1 if rc == 0 else 0
+    return Result.success({"reapplied": applied, "total": len(bans)})
+
+
+def audit() -> Result:
+    """Security-posture snapshot: SSH config, firewall, Tailscale, ban count."""
+    out, _ = _host(
+        "echo pwauth=$(sshd -T 2>/dev/null | awk '/^passwordauthentication/{print $2}'); "
+        "echo rootlogin=$(sshd -T 2>/dev/null | awk '/^permitrootlogin/{print $2}'); "
+        "echo dropcount=$(iptables -L INPUT -n 2>/dev/null | grep -c DROP); "
+        "echo tailscale=$(command -v tailscale >/dev/null && (tailscale status >/dev/null 2>&1 && echo up || echo installed) || echo no)")
+    f = {}
+    for line in out.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            f[k.strip()] = v.strip()
+    f["banned"] = len(_load_bans())
+    return Result.success(f)

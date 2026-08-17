@@ -211,6 +211,14 @@ class Config:
         return Path(__file__).resolve().parent.parent.parent / "agent-data" / "print_tuning.json"
 
     @property
+    def banlist_path(self) -> Path:
+        """Persisted IPs Warden has firewall-banned (re-applied on startup)."""
+        raw = self._get("BANLIST_PATH")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "banned_ips.txt"
+
+    @property
     def anomaly_model_path(self) -> Path:
         """Where Hermes's trained Isolation-Forest anomaly model is saved."""
         raw = self._get("ANOMALY_MODEL_PATH")
