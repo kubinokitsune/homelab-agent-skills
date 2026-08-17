@@ -139,6 +139,12 @@ class Config:
         return self._get("VISION_MODEL", "moondream")  # type: ignore[return-value]
 
     @property
+    def whisper_model(self) -> str:
+        """faster-whisper model size for Codex audio transcription: tiny|base|small.
+        'base' is a good CPU accuracy/speed balance."""
+        return self._get("WHISPER_MODEL", "base")  # type: ignore[return-value]
+
+    @property
     def failure_model_path(self) -> Path:
         """Where the trained print-failure classifier is saved."""
         raw = self._get("FAILURE_MODEL_PATH")
