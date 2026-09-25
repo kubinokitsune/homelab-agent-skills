@@ -17,6 +17,7 @@ and is ignored.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections import Counter
@@ -30,6 +31,65 @@ log = get_logger(__name__)
 
 ACCESS_LOG = "/var/log/chemcalc/access.log"
 CONTAINER = "103"
+
+# --- IP geolocation (optional) -------------------------------------------
+# A country beside an IP turns "who visited" into something readable, and makes
+# a scanner probe from a country you have never been to an obvious bot rather
+# than a bare number. It needs MaxMind's free GeoLite2-City database, which is
+# a download gated behind a free account -- so everything here degrades quietly
+# when the db (or the geoip2 package) is absent: no geo, never an error.
+GEOIP_DB = os.environ.get("GEOIP_DB", "/root/AI_Agents/agent-data/GeoLite2-City.mmdb")
+_geo_reader = None
+_geo_state: str | None = None   # None = not yet tried; "ready"; else why it's off
+
+
+def _geo_ready() -> tuple[bool, str]:
+    """Open the GeoLite2 reader once, caching success or the reason it's off."""
+    global _geo_reader, _geo_state
+    if _geo_state == "ready":
+        return True, ""
+    if _geo_state is not None:
+        return False, _geo_state
+    try:
+        import geoip2.database
+    except ImportError:
+        _geo_state = "geoip2 not installed"
+        return False, _geo_state
+    if not os.path.exists(GEOIP_DB):
+        _geo_state = f"no GeoLite2 database at {GEOIP_DB}"
+        return False, _geo_state
+    try:
+        _geo_reader = geoip2.database.Reader(GEOIP_DB)
+        _geo_state = "ready"
+        return True, ""
+    except Exception as exc:                       # corrupt/unreadable db
+        _geo_state = f"geo database error: {exc}"
+        return False, _geo_state
+
+
+def _flag(cc: str) -> str:
+    """ISO country code -> flag emoji (regional indicator letters)."""
+    if not cc or len(cc) != 2 or not cc.isalpha():
+        return "🏳️"
+    return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in cc.upper())
+
+
+def _geo(ip: str):
+    """{'country','country_code','city','flag'} for a public IP, else None.
+
+    Internal addresses (LAN, loopback, Tailscale) are never looked up; neither
+    is anything when the database is unavailable.
+    """
+    ok, _ = _geo_ready()
+    if not ok or _is_internal(ip):
+        return None
+    try:
+        r = _geo_reader.city(ip)
+        cc = r.country.iso_code or ""
+        return {"country": r.country.name or "Unknown",
+                "country_code": cc, "city": r.city.name or "", "flag": _flag(cc)}
+    except Exception:                               # not in db, bad address, etc.
+        return None
 
 # Paths nobody reaches by accident: someone is looking for a CMS, a shell, or
 # credentials. One of these is a scanner; a burst of them is worth saying so.
@@ -118,6 +178,27 @@ def summary(hours: int = 24) -> Result:
     status = Counter(h["status"] // 100 for h in hits)
     slow = [h for h in hits if float(h["ms"]) > 2000]
 
+    # Unique visitors per country (only meaningful for outside IPs).
+    geo_ready, geo_why = _geo_ready()
+    by_country: Counter = Counter()
+    for ip in visitors:
+        g = _geo(ip)
+        if g:
+            by_country[(g["flag"], g["country"])] += 1
+    geo = [(n, flag, country) for (flag, country), n in by_country.most_common()]
+
+    # Per-IP labels for "where was each visitor from", newest-seen first.
+    outside_ips = sorted({h["ip"] for h in outside})
+    visitor_labels = []
+    for ip in outside_ips:
+        g = _geo(ip)
+        visitor_labels.append({
+            "ip": ip,
+            "flag": g["flag"] if g else "🏳️",
+            "country": g["country"] if g else "",
+            "city": g["city"] if g else "",
+        })
+
     return Result.success({
         "hours": hours,
         "requests": len(hits),
@@ -130,6 +211,10 @@ def summary(hours: int = 24) -> Result:
         "top_paths": Counter(h["path"] for h in pages).most_common(5),
         "top_visitors": Counter(h["ip"] for h in outside).most_common(5),
         "slow_requests": len(slow),
+        "geo": geo,                 # [(count, flag, country), ...]
+        "visitor_labels": visitor_labels,   # [{ip, flag, country, city}, ...]
+        "geo_ready": geo_ready,
+        "geo_status": geo_why,      # why geo is off, if it is
     })
 
 
@@ -144,8 +229,13 @@ def anomalies(hours: int = 24) -> Result:
     probes = [h for h in hits if _PROBE.search(h["path"])]
     if probes:
         who = Counter(h["ip"] for h in probes).most_common(3)
+        parts = []
+        for ip, n in who:
+            g = _geo(ip)
+            tag = f" {g['flag']}{g['country']}" if g else ""
+            parts.append(f"{ip}{tag} ×{n}")
         found.append(f"🔍 {len(probes)} scanner probes (wp-admin/.env/etc) from "
-                     + ", ".join(f"{ip} ×{n}" for ip, n in who))
+                     + ", ".join(parts))
 
     errs = [h for h in hits if h["status"] >= 500]
     if errs:
@@ -157,6 +247,16 @@ def anomalies(hours: int = 24) -> Result:
     if len(guarded) >= 20:
         found.append(f"🛡️ {len(guarded)} requests rejected by the size/length guards — "
                      "either a scripted client or someone probing the limits")
+
+    # 429s mean the rate limiter is actively throttling someone: by definition a
+    # flood, so name who, and where from.
+    throttled = [h for h in hits if h["status"] == 429]
+    if throttled:
+        top_ip, top_n = Counter(h["ip"] for h in throttled).most_common(1)[0]
+        g = _geo(top_ip)
+        tag = f" {g['flag']}{g['country']}" if g else ""
+        found.append(f"⏳ {len(throttled)} requests rate-limited (429) — "
+                     f"mostly {top_ip}{tag} ×{top_n}: a flood, already being throttled")
 
     outside = [h for h in hits if not _is_internal(h["ip"])]
     if outside:
@@ -190,6 +290,9 @@ def report(hours: int = 24) -> Result:
     if d["requests"]:
         lines.append(f"   {d['ok']} ok · {d['client_errors']} client errors · "
                      f"{d['server_errors']} server errors")
+        if d["geo"]:
+            lines.append("   🌍 " + " · ".join(
+                f"{n} {flag} {country}" for n, flag, country in d["geo"][:6]))
         if d["top_paths"]:
             lines.append("   busiest: " + ", ".join(f"{p} ×{n}" for p, n in d["top_paths"][:3]))
     if a.ok and a.data["anomalies"]:
