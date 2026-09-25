@@ -112,9 +112,12 @@ def summary(since: str = "-24h") -> Result:
         return ev
     d = ev.data
     fail_by_ip = Counter(f["ip"] for f in d["failed"])
-    # Suspicious = a successful login that ISN'T the agents' LAN+publickey access.
+    # Suspicious = a successful login that ISN'T ordinary key-based access from
+    # somewhere we already trust. _is_trusted, not _is_private: since Tailscale,
+    # legitimate admin SSH arrives from 100.64.0.0/10 rather than the LAN, and
+    # treating that as an intrusion pages the owner for their own laptop.
     suspicious = [a for a in d["accepted"]
-                  if not (_is_private(a["ip"]) and a["method"] == "publickey")]
+                  if not (_is_trusted(a["ip"]) and a["method"] == "publickey")]
     internal = len(d["accepted"]) - len(suspicious)
     return Result.success({
         "failed": len(d["failed"]),
