@@ -154,6 +154,105 @@ def label_last(label: str) -> Result:
                            "label": canon})
 
 
+# --- per-frame labels (the swipe UI) -------------------------------------
+# The session-level `label` tags a whole print; these tag individual frames,
+# which is strictly better training data -- a print can be fine early and fail
+# late. Stored per session as frame_labels.json: {frame_filename: good|bad}.
+_FRAME_LABELS = "frame_labels.json"
+
+
+def _labels_path(session_dir: "Path") -> "Path":
+    return Path(session_dir) / _FRAME_LABELS
+
+
+def get_frame_labels(session_dir) -> dict:
+    """Frame -> good/bad map for one session ({} if none)."""
+    try:
+        return json.loads(_labels_path(session_dir).read_text())
+    except Exception:
+        return {}
+
+
+def set_frame_label(session_name: str, frame: str, label: str) -> Result:
+    """Label one frame good/bad. session_name is the folder name, frame the .jpg."""
+    lab = (label or "").strip().lower()
+    if lab not in ("good", "bad"):
+        return Result.failure("label must be 'good' or 'bad'")
+    folder = _root() / _safe_session(session_name)
+    if not folder.is_dir():
+        return Result.failure(f"no such print session: {session_name}")
+    if not (folder / frame).exists():
+        return Result.failure(f"no such frame: {frame}")
+    labels = get_frame_labels(folder)
+    labels[frame] = lab
+    _labels_path(folder).write_text(json.dumps(labels, indent=2))
+    return Result.success({"session": folder.name, "frame": frame, "label": lab,
+                           "labeled_in_session": len(labels)})
+
+
+def unset_frame_label(session_name: str, frame: str) -> Result:
+    """Remove one frame's label (the swipe deck's undo)."""
+    folder = _root() / _safe_session(session_name)
+    labels = get_frame_labels(folder)
+    if frame in labels:
+        del labels[frame]
+        _labels_path(folder).write_text(json.dumps(labels, indent=2))
+    return Result.success({"session": folder.name, "frame": frame})
+
+
+def _safe_session(name: str) -> str:
+    """Guard against path traversal in a session name coming from the web UI."""
+    return Path(name).name
+
+
+def unlabeled_frames(limit: int = 400) -> Result:
+    """Frames with no per-frame label yet, newest prints first, as
+    [{session, frame, elapsed}]. This is the swipe queue."""
+    out = []
+    sessions = sorted((p for p in _root().iterdir() if p.is_dir()),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+    for s in sessions:
+        labels = get_frame_labels(s)
+        for f in sorted(s.glob("*.jpg")):
+            if f.name in labels:
+                continue
+            try:
+                elapsed = int(f.stem.split("_")[-1])
+            except ValueError:
+                elapsed = 0
+            out.append({"session": s.name, "frame": f.name, "elapsed": elapsed})
+            if len(out) >= limit:
+                return Result.success(out)
+    return Result.success(out)
+
+
+def frame_label_stats() -> Result:
+    """How much frame-level labelling exists: total / labeled / good / bad."""
+    total = labeled = good = bad = 0
+    for s in _root().iterdir():
+        if not s.is_dir():
+            continue
+        labels = get_frame_labels(s)
+        for f in s.glob("*.jpg"):
+            total += 1
+            lab = labels.get(f.name)
+            if lab:
+                labeled += 1
+                good += lab == "good"
+                bad += lab == "bad"
+    return Result.success({"total": total, "labeled": labeled,
+                           "unlabeled": total - labeled, "good": good, "bad": bad})
+
+
+def frame_path(session_name: str, frame: str) -> Result:
+    """Absolute path to one frame, path-traversal-safe (for the web UI to serve)."""
+    folder = _root() / _safe_session(session_name)
+    fp = folder / Path(frame).name
+    if not fp.exists():
+        return Result.failure("frame not found")
+    return Result.success(str(fp))
+
+
 def today_summary() -> Result:
     """Today's recorded prints: count, frames, and each print's outcome/label."""
     today = datetime.now().strftime("%Y%m%d")

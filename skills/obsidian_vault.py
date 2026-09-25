@@ -194,6 +194,17 @@ def append_note(path: str, text: str, create: bool = True) -> Result:
     return Result.success({"path": _relativize(target), "created": False})
 
 
+def write_attachment(relative_path: str, data: bytes, overwrite: bool = True) -> Result:
+    """Write a binary attachment (an image, say) into the vault so a note can
+    embed it. Syncthing then carries it to every device like any other file."""
+    target = _resolve(relative_path)
+    if target.exists() and not overwrite:
+        return Result.success(_relativize(target))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return Result.success(_relativize(target))
+
+
 @skill
 def search(query: str, folder: str | None = None, limit: int = 20) -> Result:
     """Case-insensitive search over note filenames and content.

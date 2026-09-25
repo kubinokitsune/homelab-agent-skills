@@ -32,8 +32,17 @@ import numpy as np
 from skills.config import config
 from skills.logging import get_logger
 from skills.result import Result
+from skills import print_recorder
 
 _log = get_logger("failure_detector")
+
+
+def _frame_label(session_dir, frame_name: str, session_label):
+    """The label to train on for one frame: its own swipe label if it has one,
+    else the whole print's label. Per-frame beats per-print, since a print can
+    be fine early and fail late."""
+    per = print_recorder.get_frame_labels(session_dir).get(frame_name)
+    return per if per in ("good", "bad") else session_label
 
 FEATURE_SIZE = 32  # downscale frames to 32x32 grayscale
 
@@ -67,14 +76,16 @@ def _load_dataset():
             label = json.loads((s / "meta.json").read_text()).get("label")
         except Exception:
             label = None
-        # good/clean + imperfections (stringing/uneven) are all "not a failure"; bad = failure.
-        if label not in ("good", "stringing", "uneven", "bad"):
-            continue
         for f in sorted(s.glob("*.jpg")):
+            # Per-frame swipe label wins; otherwise inherit the print's label.
+            lab = _frame_label(s, f.name, label)
+            # good/clean + imperfections (stringing/uneven) are all "not a failure"; bad = failure.
+            if lab not in ("good", "stringing", "uneven", "bad"):
+                continue
             feat = _features(f.read_bytes())
             if feat is not None:
                 X.append(feat)
-                y.append(1 if label == "bad" else 0)
+                y.append(1 if lab == "bad" else 0)
                 groups.append(i)
     return np.array(X), np.array(y), np.array(groups)
 
@@ -108,9 +119,11 @@ def _clean_frames():
             label = json.loads((s / "meta.json").read_text()).get("label")
         except Exception:
             label = None
-        if label != "good":
-            continue
         for f in sorted(s.glob("*.jpg")):
+            # A frame counts as "clean" if its own swipe label is good, or (no
+            # swipe label) the whole print was labeled good.
+            if _frame_label(s, f.name, label) != "good":
+                continue
             feat = _features(f.read_bytes())
             if feat is not None:
                 X.append(feat)
