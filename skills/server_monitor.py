@@ -146,6 +146,45 @@ def containers() -> Result:
     return Result.success(cts)
 
 
+def container_resources(ctid: str | int) -> Result:
+    """One container's memory and CPU use *against its own limits*.
+
+    A container can be comfortable in host terms and still be about to be
+    OOM-killed inside its own cgroup, so the useful number is the percentage of
+    what it was allotted, not of the machine.
+    """
+    out, rc = _ssh(f"pct status {ctid} --verbose")
+    if rc != 0:
+        return Result.failure(f"pct status {ctid} failed: {out}")
+
+    vals: dict[str, str] = {}
+    for line in out.splitlines():
+        if ":" in line:
+            k, _, v = line.partition(":")
+            vals[k.strip()] = v.strip()
+
+    def num(key: str) -> float:
+        try:
+            return float(vals.get(key, 0) or 0)
+        except ValueError:
+            return 0.0
+
+    mem, maxmem = num("mem"), num("maxmem")
+    cpu, cpus = num("cpu"), num("cpus") or 1
+
+    return Result.success({
+        "id": str(ctid),
+        "status": vals.get("status", "?"),
+        "mem_mb": round(mem / 1048576, 1),
+        "maxmem_mb": round(maxmem / 1048576, 1),
+        "mem_pct": round(mem / maxmem * 100, 1) if maxmem else 0.0,
+        # pct reports cpu as a fraction of ONE core; scale by the allocation so
+        # 100% means "using everything it was given".
+        "cpu_pct": round(cpu / cpus * 100, 1),
+        "cpus": cpus,
+    })
+
+
 # --- services ------------------------------------------------------------
 
 def services() -> Result:
