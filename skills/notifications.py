@@ -46,6 +46,7 @@ class Severity(enum.Enum):
     INFO = "info"
     WARNING = "warning"
     CRITICAL = "critical"
+    EMERGENCY = "emergency"
 
 
 # -- low-level HTTP helpers ------------------------------------------------
@@ -84,12 +85,24 @@ def send_discord(channel: str, message: str) -> Result:
     return Result.failure(f"Discord #{channel} returned {code}: {body[:200]}")
 
 
+# Priority 2 re-alerts every RETRY seconds until acknowledged, giving up after
+# EXPIRE. Two minutes apart for half an hour is enough to wake someone without
+# making a phone unusable if it fires while they genuinely cannot answer.
+_EMERGENCY_RETRY = 120     # seconds between repeats (Pushover minimum is 30)
+_EMERGENCY_EXPIRE = 1800   # stop after 30 min (Pushover maximum is 10800)
+
+
 @skill
 def send_pushover(message: str, title: str | None = None, priority: int = 0) -> Result:
     """Send a Pushover push notification.
 
     ``priority=1`` is high priority and bypasses the phone's quiet hours -- use
     it for genuinely critical alerts. Default 0 is normal.
+
+    ``priority=2`` is an emergency page: it repeats every two minutes for half an
+    hour until acknowledged in the Pushover app. Pushover rejects priority 2
+    without ``retry`` and ``expire``, so they are filled in here rather than left
+    to every caller to remember.
     """
     fields = {
         "token": config.pushover_token,
@@ -97,6 +110,9 @@ def send_pushover(message: str, title: str | None = None, priority: int = 0) -> 
         "message": message,
         "priority": str(priority),
     }
+    if priority >= 2:
+        fields["retry"] = str(_EMERGENCY_RETRY)
+        fields["expire"] = str(_EMERGENCY_EXPIRE)
     if title:
         fields["title"] = title
     code, body = _post(_PUSHOVER_API, urllib.parse.urlencode(fields).encode(),
@@ -122,13 +138,20 @@ def notify(
 ) -> Result:
     """Send an alert, routed by severity. The high-level entry point.
 
-    INFO     -> Discord, ``channel`` (defaults to the agent's own channel).
-    WARNING  -> Discord #warnings.
-    CRITICAL -> Discord #critical AND Pushover (priority 1, bypasses DND).
+    INFO      -> Discord, ``channel`` (defaults to the agent's own channel).
+    WARNING   -> Discord #warnings.
+    CRITICAL  -> Discord #critical AND Pushover (priority 1, bypasses DND).
+    EMERGENCY -> Discord #critical AND Pushover priority 2, which repeats until
+                 acknowledged in the app.
 
-    Returns a single ``Result``. For CRITICAL, which sends to two places, the
-    result is successful only if both sends succeed; otherwise it carries the
-    combined reason.
+    Reserve EMERGENCY for things that are worse the longer they go unseen and
+    that only a person can stop -- a print failing overnight, an intrusion, a
+    disk about to fill. An alert that wakes you for something that could have
+    waited until morning teaches you to ignore the ones that could not.
+
+    Returns a single ``Result``. For the two-destination severities the result
+    is successful only if both sends succeed; otherwise it carries the combined
+    reason.
     """
     if severity is Severity.INFO:
         target = channel or config.agent_name.lower()
@@ -137,12 +160,19 @@ def notify(
     if severity is Severity.WARNING:
         return send_discord("warnings", _format(message, title))
 
-    # CRITICAL: log to Discord for the record, and buzz the phone past DND.
+    # CRITICAL and EMERGENCY: log to Discord for the record, and buzz the phone.
+    emergency = severity is Severity.EMERGENCY
+    label = "EMERGENCY" if emergency else "CRITICAL"
+
     discord_result = send_discord("critical", _format(message, title))
-    pushover_result = send_pushover(message, title=title or "Critical alert", priority=1)
+    pushover_result = send_pushover(
+        message,
+        title=title or f"{label.title()} alert",
+        priority=2 if emergency else 1,
+    )
 
     if discord_result.ok and pushover_result.ok:
         return Result.success({"discord": discord_result.data, "pushover": pushover_result.data})
 
     reasons = [r.error for r in (discord_result, pushover_result) if not r.ok]
-    return Result.failure("CRITICAL alert partially failed: " + "; ".join(reasons))
+    return Result.failure(f"{label} alert partially failed: " + "; ".join(reasons))
