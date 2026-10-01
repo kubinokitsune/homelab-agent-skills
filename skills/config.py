@@ -346,6 +346,26 @@ class Config:
     def pushover_user(self) -> str:
         return self._require("PUSHOVER_USER")
 
+    # -- Email: READ-ONLY inbox summaries (IMAP) ---------------------------
+    # The agent only ever reads. An app password (not the real Google password)
+    # lives in .env and is revocable in one click. Unset = email summaries off.
+
+    @property
+    def email_imap_host(self) -> str:
+        return self._get("IMAP_HOST", "imap.gmail.com")
+
+    @property
+    def email_address(self) -> str | None:
+        return self._get("EMAIL_ADDRESS")
+
+    @property
+    def email_app_password(self) -> str:
+        return self._require("EMAIL_APP_PASSWORD")
+
+    @property
+    def email_configured(self) -> bool:
+        return bool(self._get("EMAIL_ADDRESS") and self._get("EMAIL_APP_PASSWORD"))
+
     # -- Discord: one webhook per channel ----------------------------------
 
     def discord_webhook(self, channel: str) -> str:
