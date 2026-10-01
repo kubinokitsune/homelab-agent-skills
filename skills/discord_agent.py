@@ -457,8 +457,14 @@ class DiscordAgent:
     async def _run_command(self, cmd: str, args: str, message) -> str | None:
         """Execute one '!command' -- built-ins first, then the agent's own."""
         if cmd == "help":
-            return self.help_text + (
-                "\n**Memory & notes (I grow with use):**\n"
+            # The agent's OWN commands, read live from the registry -- so a newly
+            # added command shows up here automatically and this list is never
+            # stale, rather than depending on someone editing help_text.
+            own = sorted(self._commands)
+            own_block = (f"\n**My commands:** {'  '.join(f'`!{c}`' for c in own)}\n"
+                         if own else "\n")
+            return self.help_text + own_block + (
+                "**Memory & notes (I grow with use):**\n"
                 "- `!note <text>` -- save a note to your Obsidian vault\n"
                 "- ...or just write the whole note and end the message with `!newnote`\n"
                 "- `!learn <fact>` -- teach me; I keep it, use it, and save it to your vault\n"
