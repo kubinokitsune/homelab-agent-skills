@@ -10,17 +10,17 @@ agent at once, and they all behave identically.
 
 ```mermaid
 graph TD
-    B["🧩 DiscordAgent base class<br/>(one shared library)"]
-    SK["shared skills<br/>local LLM · vector memory · Obsidian vault<br/>Moonraker · vision · ML · monitoring · email"]
-    GR["grounding rules<br/>answer from real data, or say 'I don't know'<br/>— never invent"]
+    B["DiscordAgent base class"]
+    SK["shared skills<br/>local LLM, vector memory, Obsidian vault,<br/>Moonraker, vision, ML, monitoring, email"]
+    GR["grounding rules<br/>answer from real data or say so, never invent"]
     B --- SK
     B --- GR
-    B --> F["🔧 Forge<br/>engineering"]
-    B --> M["🧱 Mason<br/>3D printing"]
-    B --> H["🖥️ Hermes<br/>server health"]
-    B --> W["🛡️ Warden<br/>security"]
-    B --> I["☀️ Iris<br/>daily digest"]
-    B --> MORE["…+ 7 more<br/>(tutor, scheduler, librarian,<br/>sources, recruiting, gym, recovery)"]
+    B --> F["Forge<br/>engineering"]
+    B --> M["Mason<br/>3D printing"]
+    B --> H["Hermes<br/>server health"]
+    B --> W["Warden<br/>security"]
+    B --> I["Iris<br/>daily digest"]
+    B --> MORE["plus 7 more<br/>tutor, scheduler, librarian, sources,<br/>recruiting, gym, recovery"]
 ```
 
 Full ecosystem + wiki: **[the homelab hub](https://github.com/kubinokitsune/homelab)**.
