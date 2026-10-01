@@ -30,6 +30,19 @@ FEATURES = ["load1", "ram_pct", "disk_pct", "cpu_temp"]
 MIN_TRAIN = 200      # snapshots before a baseline can be trained
 MAX_KEEP = 8000      # rolling window (~11 days at one/2min) -- recent "normal"
 
+# This box is CPU-bound and GPU-less, so load spikes on *every* LLM query -- that
+# is normal, not an anomaly. These choices stop the model crying wolf, tuned
+# against ~8k real snapshots (the old contamination=0.02 flagged 2% of *normal*
+# operation; this flags next to none while still catching genuine weirdness):
+CONTAMINATION = 0.005   # only the rarest ~0.5% of multivariate states are "weird"
+SCORE_MARGIN = 0.0      # the decision boundary itself; smoothing + the 3-sweep
+                        # streak supply the confidence buffer, not a wider margin
+SMOOTH_WINDOW = 5       # score the MEDIAN of the last 5 readings (~10 min), so a
+                        # lone spike vanishes and only sustained drift registers
+# Note the division of labour: single-metric extremes (disk full, overheating,
+# RAM near OOM) are caught deterministically by Hermes' hard thresholds. This
+# model's job is the *unusual combination* those thresholds would miss.
+
 
 def record(metrics: dict) -> Result:
     """Append one metric snapshot to the rolling history."""
@@ -86,18 +99,22 @@ def train() -> Result:
         return Result.failure(f"not enough baseline yet: {n}/{MIN_TRAIN} snapshots "
                               "(Hermes records one every 2 min — give it time).")
     from sklearn.ensemble import IsolationForest
+    from sklearn.preprocessing import StandardScaler
     import joblib
-    clf = IsolationForest(n_estimators=150, contamination=0.02, random_state=0).fit(X)
+    # Scale first: without it, the widest-range feature dominates the forest's
+    # random splits. With it, each feature is judged against its own spread.
+    scaler = StandardScaler().fit(X)
+    clf = IsolationForest(n_estimators=200, contamination=CONTAMINATION,
+                          random_state=0).fit(scaler.transform(X))
     config.anomaly_model_path.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"model": clf, "features": FEATURES}, config.anomaly_model_path)
+    joblib.dump({"model": clf, "scaler": scaler, "features": FEATURES},
+                config.anomaly_model_path)
     return Result.success({"trained_on": n})
 
 
 def score(metrics: dict) -> Result:
-    """Score a reading against the baseline -> {anomaly: bool, score: float}.
-
-    score < 0 = anomalous (the more negative, the weirder). Needs a trained model.
-    """
+    """Score a single reading -> {anomaly, score}. Prefer score_recent() in the
+    watchdog; this is the raw per-snapshot call. Needs a trained model."""
     if not config.anomaly_model_path.exists():
         return Result.failure("no baseline model yet -- run train()")
     import numpy as np
@@ -106,9 +123,31 @@ def score(metrics: dict) -> Result:
     x = np.array([[metrics.get(k) for k in bundle["features"]]], dtype=float)
     if np.isnan(x).any():
         return Result.failure("incomplete reading")
+    scaler = bundle.get("scaler")
+    if scaler is not None:
+        x = scaler.transform(x)
     clf = bundle["model"]
     s = float(clf.decision_function(x)[0])
-    return Result.success({"anomaly": clf.predict(x)[0] == -1, "score": round(s, 3)})
+    # Flag only when clearly past the boundary, not merely grazing it.
+    return Result.success({"anomaly": s < -SCORE_MARGIN, "score": round(s, 3)})
+
+
+def score_recent(window: int = SMOOTH_WINDOW) -> Result:
+    """Score the MEDIAN of the last `window` readings, not the latest snapshot.
+
+    This is the one the watchdog should call: a single transient spike (a normal
+    LLM query pinning the CPU for a sweep) can't move a median, so only a
+    sustained shift away from baseline -- the kind that actually matters --
+    registers as an anomaly."""
+    import numpy as np
+    X = _matrix(_load_rows(window))
+    if X is None or len(X) == 0:
+        return Result.failure("no recent readings")
+    med = {k: float(np.median(X[:, i])) for i, k in enumerate(FEATURES)}
+    r = score(med)
+    if r.ok:
+        r.data["window"] = len(X)
+    return r
 
 
 def trends(n: int = 12) -> Result:
