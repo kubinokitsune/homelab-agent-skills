@@ -55,22 +55,41 @@ def _parse_date(s: str) -> str:
     return datetime.strptime(s, "%Y-%m-%d").date().isoformat()  # ValueError -> @skill failure
 
 
+def _norm_time(t: str) -> str:
+    """Normalize an HH:MM string, or '' if blank/invalid (never raises)."""
+    t = (t or "").strip()
+    if not t:
+        return ""
+    try:
+        return datetime.strptime(t, "%H:%M").strftime("%H:%M")
+    except ValueError:
+        return ""
+
+
 @skill
-def add(when: str, title: str, type: str = "", notes: str = "") -> Result:
-    """Add an event. ``when`` is YYYY-MM-DD (or today/tomorrow)."""
+def add(when: str, title: str, type: str = "", notes: str = "",
+        start: str = "", end: str = "") -> Result:
+    """Add an event. ``when`` is YYYY-MM-DD (or today/tomorrow). ``start``/``end``
+    are optional ``HH:MM`` clock times -- give them and the event occupies real
+    hours (so Kairos can block time and spot conflicts); omit them for an all-day
+    event. Events written before times existed stay valid (no start/end)."""
     iso = _parse_date(when)
     if not title.strip():
         return Result.failure("an event needs a title")
+    s, e = _norm_time(start), _norm_time(end)
+    if s and e and e <= s:
+        return Result.failure("the end time must be after the start time")
     events = _load()
     ev = {
         "id": datetime.now().strftime("%Y%m%d%H%M%S"),
         "date": iso, "title": title.strip(), "type": type.strip(),
+        "start": s, "end": e,
         "notes": notes.strip(), "created": date.today().isoformat(),
     }
     events.append(ev)
-    events.sort(key=lambda e: e["date"])
+    events.sort(key=lambda e: (e["date"], e.get("start") or "99:99"))
     _save(events)
-    log.info("calendar add %s -- %s", iso, title)
+    log.info("calendar add %s %s-%s -- %s", iso, s or "--", e or "--", title)
     return Result.success(ev)
 
 
@@ -86,7 +105,7 @@ def remove(event_id: str) -> Result:
 
 @skill
 def all_events() -> Result:
-    return Result.success(sorted(_load(), key=lambda e: e["date"]))
+    return Result.success(sorted(_load(), key=lambda e: (e["date"], e.get("start") or "99:99")))
 
 
 @skill
@@ -94,7 +113,7 @@ def upcoming(days: int = 90) -> Result:
     """Events from today through ``days`` ahead, soonest first."""
     today = date.today().isoformat()
     end = (date.today() + timedelta(days=days)).isoformat()
-    out = [e for e in sorted(_load(), key=lambda e: e["date"]) if today <= e["date"] <= end]
+    out = [e for e in sorted(_load(), key=lambda e: (e["date"], e.get("start") or "99:99")) if today <= e["date"] <= end]
     return Result.success(out)
 
 
