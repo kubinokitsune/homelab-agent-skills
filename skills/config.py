@@ -226,6 +226,15 @@ class Config:
             return Path(raw)
         return Path(__file__).resolve().parent.parent.parent / "agent-data" / "anomaly_detector.joblib"
 
+    @property
+    def boot_state_path(self) -> Path:
+        """Last boot time Hermes saw, so it can tell when the host has rebooted
+        (even across a Hermes restart)."""
+        raw = self._get("BOOT_STATE_PATH")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "last_boot.txt"
+
     # -- File ops: allowlisted server roots --------------------------------
 
     @property

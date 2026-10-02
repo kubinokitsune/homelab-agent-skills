@@ -79,6 +79,21 @@ def host_health() -> Result:
         return Result.failure(f"couldn't parse host health: {exc}")
 
 
+def boot_time() -> Result:
+    """The host's boot time as a Unix epoch (stable; unlike uptime it never drifts).
+
+    Reads ``btime`` from /proc/stat -- the kernel's record of when this boot began.
+    A changed value between two reads means the box rebooted in between.
+    """
+    out, rc = _ssh("awk '/^btime/{print $2}' /proc/stat")
+    if rc != 0:
+        return Result.failure(f"host unreachable: {out}")
+    try:
+        return Result.success({"btime": int(out.strip())})
+    except (ValueError, AttributeError) as exc:
+        return Result.failure(f"couldn't read boot time: {exc}")
+
+
 def free_disk() -> Result:
     """Reclaim host disk safely: vacuum old journals + clear the apt cache. Returns
     MB freed and the disk % afterward. No user data is touched."""
