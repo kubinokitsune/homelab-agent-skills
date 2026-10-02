@@ -324,7 +324,8 @@ class DiscordAgent:
         open -- not just embeddings only the agents can see."""
         from datetime import datetime as _dt
         stamp = _dt.now().strftime("%Y-%m-%d %H%M%S")
-        path = f"{self.notes_folder}/{stamp}.md"
+        # Name it "<Agent> - <topic> - <stamp>" so the graph node is self-explaining.
+        path = f"{self.notes_folder}/{vault.note_filename(self.name, text, stamp)}.md"
         # Links that place the note in the Homelab graph cluster, under Agent Notes.
         body = text + "\n\n---\n*Part of [[Agent Notes]] · [[Homelab]]*"
         w = await asyncio.to_thread(

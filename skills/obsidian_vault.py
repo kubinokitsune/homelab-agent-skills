@@ -18,6 +18,7 @@ All paths use ``.md`` implicitly -- pass it or omit it, both work.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import date
 from pathlib import Path
@@ -104,6 +105,17 @@ def read_note(path: str) -> Result:
 
 
 @skill
+def note_filename(prefix: str, text: str, stamp: str, limit: int = 42) -> str:
+    """A readable note filename: ``<prefix> - <topic> - <stamp>``. The topic is a
+    short, filesystem-safe slug of the note's first line, so a glance at the name
+    (or a graph-view node) says who wrote it and what it's about -- instead of a
+    wall of identical date stamps."""
+    first = (text.strip().splitlines() or [""])[0]
+    slug = re.sub(r"\s+", " ", first).strip()
+    slug = "".join(c for c in slug if c.isalnum() or c in " -_,").strip()[:limit].strip(" -,")
+    return f"{prefix} - {slug} - {stamp}" if slug else f"{prefix} - {stamp}"
+
+
 def write_note(
     path: str,
     body: str,
