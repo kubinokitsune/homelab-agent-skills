@@ -325,8 +325,10 @@ class DiscordAgent:
         from datetime import datetime as _dt
         stamp = _dt.now().strftime("%Y-%m-%d %H%M%S")
         path = f"{self.notes_folder}/{stamp}.md"
+        # Links that place the note in the Homelab graph cluster, under Agent Notes.
+        body = text + "\n\n---\n*Part of [[Agent Notes]] · [[Homelab]]*"
         w = await asyncio.to_thread(
-            vault.write_note, path, text,
+            vault.write_note, path, body,
             {"type": f"{self.name.lower()}-note", "kind": kind, "tags": [self.name.lower()]})
         if not w.ok:
             self.log.warning("vault note write failed: %s", w.error)
