@@ -54,10 +54,12 @@ ARCHIVE_FOLDER = "_Archive"
 MOC_FOLDER = "00_MOC"
 
 # Folders never touched by the edit stages (merge + connect). Append-only logs,
-# generated MOCs, the archive, and -- by Pipe's rule -- IB coursework, which must
-# stay separate from personal projects (no merging IA notes, no cross-linking
-# coursework into project notes).
-NO_EDIT_PREFIXES = (ARCHIVE_FOLDER + "/", MOC_FOLDER + "/", "01_Conversations/", "School/")
+# generated MOCs, the archive, IB coursework (Pipe's rule: coursework stays
+# separate from personal projects), and the agents' own output -- which is
+# already structured by the agents that write it, and whose digests share a
+# daily template that must never be merged as "duplicates".
+NO_EDIT_PREFIXES = (ARCHIVE_FOLDER + "/", MOC_FOLDER + "/", "01_Conversations/",
+                    "School/", "🤖 Homelab/")
 
 # Folders excluded only from MOC building (generated/archive). Coursework is NOT
 # here: School still gets its own internal MOC -- that organizes school notes
