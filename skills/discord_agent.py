@@ -92,7 +92,7 @@ class DiscordAgent:
         self.learned_collection = f"{name.lower()}_memory"
         # Where this agent writes notes in the vault (one tidy place per agent),
         # so anything you ask it to save becomes real markdown you can open.
-        self.notes_folder = f"Agent Notes/{name}"
+        self.notes_folder = f"🤖 Homelab/Agent Notes/{name}"
         self.help_text = help_text or f"**{name}** -- @mention or DM me a question."
         self.model = model or config.default_model
         self.keep_alive = keep_alive
