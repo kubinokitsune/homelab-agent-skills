@@ -80,8 +80,16 @@ def add(when: str, title: str, type: str = "", notes: str = "",
     if s and e and e <= s:
         return Result.failure("the end time must be after the start time")
     events = _load()
+    # Unique id: a timestamp to the second used to collide when two events were
+    # added within the same second (then removing one removed both).
+    taken = {e["id"] for e in events}
+    eid = datetime.now().strftime("%Y%m%d%H%M%S")
+    n = 1
+    while eid in taken:
+        eid = f"{datetime.now():%Y%m%d%H%M%S}-{n}"
+        n += 1
     ev = {
-        "id": datetime.now().strftime("%Y%m%d%H%M%S"),
+        "id": eid,
         "date": iso, "title": title.strip(), "type": type.strip(),
         "start": s, "end": e,
         "notes": notes.strip(), "created": date.today().isoformat(),

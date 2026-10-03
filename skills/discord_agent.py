@@ -38,6 +38,9 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import base64
+import mimetypes
+import os
 import re
 from collections import defaultdict, deque
 from datetime import date
@@ -45,8 +48,10 @@ from typing import Awaitable, Callable
 
 import aiohttp
 import discord
+from aiohttp import web
 
 from skills import agent_mail
+from skills import hub_registry
 from skills import obsidian_vault as vault
 from skills import vector_store as vs
 from skills.config import config
@@ -57,6 +62,76 @@ _MENTION_RE = re.compile(r"<@[!&]?\d+>")
 
 CommandHandler = Callable[["DiscordAgent", str, discord.Message], Awaitable["str | None"]]
 StartupHook = Callable[["DiscordAgent"], Awaitable[None]]
+
+
+# -- web bridge stand-ins ------------------------------------------------------
+# The hub talks to an agent over a loopback HTTP bridge. Handlers were written
+# against discord.Message, so the bridge hands them a stand-in with the same
+# small surface they use (reply, channel.send/typing, author.id, channel.id,
+# attachments) that CAPTURES output instead of sending it -- images included,
+# so Mason's camera frames reach the browser too.
+
+class _WebCapture:
+    def __init__(self) -> None:
+        self.parts: list[dict] = []
+
+    def add(self, content=None, file=None, files=None, **_ignored) -> None:
+        images = []
+        for f in ([file] if file else []) + list(files or []):
+            try:
+                fp = getattr(f, "fp", None)
+                if fp is None:
+                    continue
+                try:
+                    fp.seek(0)
+                except Exception:
+                    pass
+                data = fp.read()
+                mime = mimetypes.guess_type(getattr(f, "filename", "") or "")[0] or "image/jpeg"
+                images.append(f"data:{mime};base64,{base64.b64encode(data).decode()}")
+            except Exception:
+                continue
+        if content or images:
+            self.parts.append({"text": str(content or ""), "images": images})
+
+
+class _NullTyping:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _WebChannel:
+    def __init__(self, cap: _WebCapture, cid: str) -> None:
+        self._cap, self.id, self.name = cap, cid, "web"
+
+    async def send(self, content=None, **kw):
+        self._cap.add(content, **kw)
+
+    def typing(self):
+        return _NullTyping()
+
+
+class _WebAuthor:
+    id = 1            # distinct from every real Discord id (those are 17+ digits)
+    name = display_name = "Pipe (web)"
+    mention = ""
+    bot = False
+
+
+class _WebMessage:
+    def __init__(self, text: str, cap: _WebCapture, cid: str) -> None:
+        self.content = text
+        self.attachments: list = []
+        self.author = _WebAuthor()
+        self.channel = _WebChannel(cap, cid)
+        self.guild = None
+        self._cap = cap
+
+    async def reply(self, content=None, **kw):
+        self._cap.add(content, **kw)
 
 
 class DiscordAgent:
@@ -113,6 +188,7 @@ class DiscordAgent:
         self._attachment_handler = None  # optional file-upload handler (Codex)
         self._plain_handler = None       # optional non-command-text handler (Codex)
         self._context_provider = None    # optional extra-context source (Kairos calendar)
+        self._bridge_routes: list[tuple[str, str, Callable]] = []  # extra hub endpoints
 
         intents = discord.Intents.default()
         intents.message_content = True
@@ -121,6 +197,16 @@ class DiscordAgent:
         self.client.event(self.on_message)
 
     # -- registration ------------------------------------------------------
+
+    def bridge_route(self, method: str, path: str):
+        """Expose an extra JSON endpoint on the hub bridge at ``/x<path>`` -- for
+        hub pages that need structured data rather than chat (Kairos' week plan,
+        later Mason's printer state). Handler: async (agent, request) -> dict, or
+        (dict, status). Loopback-only like the rest of the bridge."""
+        def decorator(fn):
+            self._bridge_routes.append((method.upper(), path, fn))
+            return fn
+        return decorator
 
     def command(self, name: str) -> Callable[[CommandHandler], CommandHandler]:
         """Register a ``!name`` command. Handler: (agent, args, message) -> reply."""
@@ -273,9 +359,104 @@ class DiscordAgent:
 
     async def on_ready(self) -> None:
         self.log.info("%s online as %s (id=%s)", self.name, self.client.user, self.client.user.id)
+        # on_ready fires again on every gateway reconnect; start things once.
+        if getattr(self, "_ready_once", False):
+            return
+        self._ready_once = True
         if self._startup is not None:
             asyncio.create_task(self._run_startup())
         asyncio.create_task(self._poll_inbox())
+        await self._start_bridge()
+
+    # -- web bridge (for the hub UI) ---------------------------------------
+
+    async def _start_bridge(self) -> None:
+        """Serve a loopback-only HTTP API so the hub can talk to this agent
+        without Discord. Never fatal: if it can't bind, Discord keeps working."""
+        port = hub_registry.bridge_port(self.name)
+        if not port or os.getenv("AGENT_BRIDGE", "1") == "0":
+            return
+        app = web.Application(client_max_size=1024 ** 2)
+        app.router.add_get("/info", self._bridge_info)
+        app.router.add_post("/chat", self._bridge_chat)
+        for method, path, fn in self._bridge_routes:
+            app.router.add_route(method, "/x" + path, self._wrap_route(fn))
+        try:
+            runner = web.AppRunner(app, access_log=None)
+            await runner.setup()
+            await web.TCPSite(runner, "127.0.0.1", port).start()
+            self._bridge_runner = runner
+            self.log.info("web bridge on 127.0.0.1:%s", port)
+        except OSError as exc:
+            self.log.warning("web bridge not started (port %s): %s", port, exc)
+
+    def _wrap_route(self, fn):
+        async def handler(request: web.Request) -> web.Response:
+            try:
+                out = await fn(self, request)
+            except Exception as exc:
+                self.log.exception("bridge route %s failed", request.path)
+                return web.json_response({"error": str(exc)}, status=500)
+            data, status = out if isinstance(out, tuple) else (out, 200)
+            return web.json_response(data, status=status)
+        return handler
+
+    def _commands_in(self, text: str) -> list[tuple[str, str]]:
+        """The (command, args) pairs a message would run -- mirrors _dispatch, so
+        the confirmation check sees exactly what would execute."""
+        s = text.strip()
+        if not s.startswith("!"):
+            return []
+        segs = self._split_commands(s)
+        if len(segs) >= 2 and all(self._is_known_command(c) for c, _ in segs):
+            return segs
+        cmd, _, args = s[1:].partition(" ")
+        return [(cmd.lower(), args.strip())]
+
+    async def _bridge_info(self, request: web.Request) -> web.Response:
+        entry = hub_registry.AGENTS.get(self.name) or {}
+        return web.json_response({
+            "name": self.name,
+            "commands": sorted(self._BUILTIN_CMDS | set(self._commands)),
+            "own_commands": sorted(self._commands),
+            "confirm": sorted((entry.get("confirm") or {}).keys()),
+            "help": self.help_text,
+        })
+
+    async def _bridge_chat(self, request: web.Request) -> web.Response:
+        """POST {text, session?} -> {replies: [{text, images}]}. Runs the exact
+        same dispatch as a Discord message, so commands, chains, plain-English
+        hooks (Kairos) and RAG chat all behave identically."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "expected JSON"}, status=400)
+        text = str(body.get("text", "")).strip()
+        if not text:
+            return web.json_response({"error": "empty message"}, status=400)
+        # Dangerous commands wait for an explicit confirm -- enforced here, so
+        # no client (or typo) can skip it.
+        if body.get("confirm") is not True:
+            asks = [(c, p) for c, a in self._commands_in(text)
+                    if (p := hub_registry.confirm_prompt(self.name, c, a))]
+            if asks:
+                return web.json_response({
+                    "needs_confirm": True,
+                    "commands": [c for c, _ in asks],
+                    "prompt": "\n".join(p for _, p in asks),
+                }, status=409)
+        cid = f"web:{body.get('session') or 'default'}"
+        cap = _WebCapture()
+        msg = _WebMessage(text, cap, cid)
+        self.log.info("handling from=web: %r", text[:80])
+        try:
+            reply = await self._dispatch(text, self._history[cid], msg)
+        except Exception as exc:
+            self.log.exception("bridge dispatch failed")
+            reply = f"Something broke handling that: {exc}"
+        if reply:
+            cap.add(reply)
+        return web.json_response({"replies": cap.parts})
 
     async def _run_startup(self) -> None:
         try:
