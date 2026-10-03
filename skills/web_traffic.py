@@ -125,7 +125,14 @@ def _host(cmd: str, timeout: float = 25) -> tuple[str, int]:
 
 
 def _read_log(max_lines: int = 20000) -> tuple[list[str], str | None]:
-    out, rc = _host(f"pct exec {CONTAINER} -- tail -n {max_lines} {ACCESS_LOG} 2>/dev/null")
+    # gunicorn's log is rotated daily (access.log, access.log.1, then .2.gz ...).
+    # Reading only access.log saw just the hours since the last rotation, so the
+    # 9 pm daily report covered about two hours of the day. Read the rotated
+    # files too, oldest first (zcat -f passes the uncompressed ones through);
+    # _parse() keeps only the requested window.
+    log_dir = ACCESS_LOG.rsplit("/", 1)[0]
+    out, rc = _host(f"pct exec {CONTAINER} -- sh -c 'cd {log_dir} && "
+                    f"zcat -f $(ls -1tr access.log*) 2>/dev/null | tail -n {max_lines}'")
     if rc != 0:
         return [], f"couldn't read the access log: {out[:150]}"
     return [l for l in out.splitlines() if l.strip()], None

@@ -129,6 +129,83 @@ def summary(since: str = "-24h") -> Result:
     })
 
 
+def auth_counts(since: str = "-24h") -> Result:
+    """sshd auth events aggregated ON THE HOST: [{kind, method, user, ip, n}].
+
+    The agents SSH into the host thousands of times a day, so shipping every
+    log line over SSH for a dashboard refresh (several MB for a week) is the
+    wrong shape; this sends one line per distinct (kind, user, ip).
+    kind: accepted | failed | invalid."""
+    out, rc = _host(
+        f"journalctl -u ssh --since '{since}' --no-pager -o cat 2>/dev/null | "
+        "grep -E 'Accepted |Failed password|Invalid user' | sed -E "
+        "-e 's/.*Accepted ([^ ]+) for ([^ ]+) from ([0-9.]+).*/accepted \\1 \\2 \\3/' "
+        "-e 's/.*Failed password for (invalid user )?([^ ]+) from ([0-9.]+).*/failed - \\2 \\3/' "
+        "-e 's/.*Invalid user ([^ ]+) from ([0-9.]+).*/invalid - \\1 \\2/' | sort | uniq -c", timeout=40)
+    if rc not in (0, 1):                       # grep exits 1 when nothing matched
+        return Result.failure(f"couldn't read the auth journal: {out}")
+    rows = []
+    for line in out.splitlines():
+        f = line.split()
+        if len(f) == 5 and f[0].isdigit() and f[1] in ("accepted", "failed", "invalid"):
+            rows.append({"n": int(f[0]), "kind": f[1], "method": f[2], "user": f[3], "ip": f[4]})
+    return Result.success(rows)
+
+
+# Well-known ports on this host, for the security panel.
+PORT_LABELS = {
+    22: "SSH", 25: "Mail relay (local)", 85: "Proxmox daemon (local)", 111: "rpcbind (NFS helper)",
+    443: "Tailscale Serve (Homelab Hub)", 3128: "Proxmox SPICE proxy", 8006: "Proxmox web UI",
+    8080: "Printer camera stream",
+}
+
+
+def ports_detail() -> Result:
+    """Listening TCP sockets with the owning process and who can reach them:
+    'this machine only' (loopback), 'tailnet only' (bound to the Tailscale
+    address), or 'home network + tailnet' (bound to every interface)."""
+    out, rc = _host("ss -tlnpH")
+    if rc != 0:
+        return Result.failure(f"ss failed: {out}")
+    rows, seen = [], set()
+    for line in out.splitlines():
+        f = line.split()
+        if len(f) < 4:
+            continue
+        addr = f[3]
+        host, _, port = addr.rpartition(":")
+        host = host.strip("[]")
+        m = re.search(r'users:\(\("([^"]+)"', line)
+        proc = m.group(1) if m else ""
+        if host in ("127.0.0.1", "::1"):
+            scope = "this machine only"
+        elif host.startswith("100.") or host.startswith("fd7a:115c:a1e0"):
+            scope = "tailnet only"
+        else:
+            scope = "home network + tailnet"
+        key = (port, scope, proc)
+        if key in seen:                        # IPv4 + IPv6 of the same service
+            continue
+        seen.add(key)
+        p = int(port) if port.isdigit() else 0
+        label = PORT_LABELS.get(p) or ("Tailscale" if proc == "tailscaled" else proc or "unknown")
+        rows.append({"port": p, "address": addr, "process": proc, "label": label, "scope": scope})
+    rows.sort(key=lambda r: (r["scope"] != "home network + tailnet", r["port"]))
+    return Result.success(rows)
+
+
+def exposure() -> Result:
+    """What Tailscale publishes beyond the LAN, on the host and in the
+    calculator's container: Funnel = the public internet, Serve = tailnet only."""
+    out, _ = _host("tailscale funnel status 2>&1; pct exec 103 -- tailscale funnel status 2>&1", timeout=25)
+    public, tailnet = [], []
+    for line in out.splitlines():
+        m = re.match(r"^(https://\S+) \((Funnel on|tailnet only)\)", line.strip())
+        if m:
+            (public if m.group(2) == "Funnel on" else tailnet).append(m.group(1))
+    return Result.success({"public": sorted(set(public)), "tailnet_only": sorted(set(tailnet))})
+
+
 def sessions() -> Result:
     """Active login sessions (who)."""
     out, rc = _host("who")
