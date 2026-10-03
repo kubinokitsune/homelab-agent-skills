@@ -23,10 +23,12 @@ from __future__ import annotations
 
 import enum
 import json
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 
+from skills import events
 from skills.config import config
 from skills.errors import skill
 from skills.logging import get_logger
@@ -67,6 +69,19 @@ def _post(url: str, data: bytes, content_type: str) -> tuple[int, str]:
         return exc.code, exc.read().decode(errors="replace")
 
 
+# -- activity feed ---------------------------------------------------------
+# Every alert is also written to the hub's activity feed -- BEFORE it's sent, so
+# an alert still shows in the hub when Discord or Pushover is down. notify()
+# records once itself and silences the primitives it calls, so one CRITICAL
+# alert is one feed entry, not two.
+
+_feed = threading.local()
+
+
+def _feed_muted() -> bool:
+    return getattr(_feed, "muted", False)
+
+
 # -- primitives ------------------------------------------------------------
 
 @skill
@@ -76,6 +91,8 @@ def send_discord(channel: str, message: str) -> Result:
     ``channel`` is the logical name ("warnings"), resolved to its webhook via
     config. The sending agent's name appears as the Discord username.
     """
+    if not _feed_muted():
+        events.record("alert", message, severity={"critical": "critical", "warnings": "warning"}.get(channel, "info"))
     url = config.discord_webhook(channel)
     payload = json.dumps({"content": message, "username": config.agent_name}).encode()
     code, body = _post(url, payload, "application/json")
@@ -104,6 +121,9 @@ def send_pushover(message: str, title: str | None = None, priority: int = 0) -> 
     without ``retry`` and ``expire``, so they are filled in here rather than left
     to every caller to remember.
     """
+    if not _feed_muted():
+        events.record("page", message, title=title or "",
+                      severity="emergency" if priority >= 2 else "critical" if priority == 1 else "info")
     fields = {
         "token": config.pushover_token,
         "user": config.pushover_user,
@@ -153,6 +173,16 @@ def notify(
     is successful only if both sends succeed; otherwise it carries the combined
     reason.
     """
+    events.record("page" if severity in (Severity.CRITICAL, Severity.EMERGENCY) else "alert",
+                  message, severity=severity.value, title=title or "")
+    _feed.muted = True
+    try:
+        return _route(message, severity, channel, title)
+    finally:
+        _feed.muted = False
+
+
+def _route(message: str, severity: Severity, channel: str | None, title: str | None) -> Result:
     if severity is Severity.INFO:
         target = channel or config.agent_name.lower()
         return send_discord(target, _format(message, title))

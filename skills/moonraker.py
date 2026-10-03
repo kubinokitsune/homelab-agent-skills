@@ -112,6 +112,29 @@ def status() -> Result:
     })
 
 
+def temperature_history(seconds: int = 900, step: int = 5) -> Result:
+    """Recent hotend/bed temperatures for a chart, oldest first.
+
+    Moonraker keeps ~20 minutes at one sample per second per sensor; this returns
+    the last ``seconds`` of it, keeping every ``step``-th sample counted back
+    from the newest so the right edge of a chart is always "now". Empty series
+    when Klipper isn't connected (nothing is being measured).
+    """
+    res = _get("/server/temperature_store")
+    if not res.ok:
+        return res
+    names = {"extruder": "hotend", "heater_bed": "bed"}
+    out = {}
+    for sensor, series in (res.data.get("result") or {}).items():
+        if sensor not in names:
+            continue
+        def tail(values):
+            return [round(v or 0, 1) for v in (values or [])[-seconds:][::-1][::step][::-1]]
+        out[names[sensor]] = {"temps": tail(series.get("temperatures")),
+                              "targets": tail(series.get("targets"))}
+    return Result.success({"step": step, "series": out})
+
+
 def list_files(limit: int = 15) -> Result:
     """Recent gcode files on the printer, newest first."""
     res = _get("/server/files/list?root=gcodes")

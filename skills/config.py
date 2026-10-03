@@ -227,6 +227,15 @@ class Config:
         return Path(__file__).resolve().parent.parent.parent / "agent-data" / "anomaly_detector.joblib"
 
     @property
+    def hub_events_path(self) -> Path:
+        """Shared activity feed (JSON lines) the agents append to and the hub
+        streams live: proactive posts, alerts and phone pages."""
+        raw = self._get("HUB_EVENTS_PATH")
+        if raw:
+            return Path(raw)
+        return Path(__file__).resolve().parent.parent.parent / "agent-data" / "hub_events.jsonl"
+
+    @property
     def boot_state_path(self) -> Path:
         """Last boot time Hermes saw, so it can tell when the host has rebooted
         (even across a Hermes restart)."""

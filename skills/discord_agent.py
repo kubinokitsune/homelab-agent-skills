@@ -51,6 +51,7 @@ import discord
 from aiohttp import web
 
 from skills import agent_mail
+from skills import events
 from skills import hub_registry
 from skills import obsidian_vault as vault
 from skills import vector_store as vs
@@ -730,6 +731,9 @@ class DiscordAgent:
 
         Returns False if the channel isn't found or visible to the bot.
         """
+        # Mirror it to the hub's activity feed first, so it shows there even if
+        # the Discord send fails.
+        events.record("post", text, agent=self.name, severity=events.post_severity(text))
         channel = self.client.get_channel(channel_id)
         if channel is None:
             self.log.warning("post: channel %s not found or not visible", channel_id)

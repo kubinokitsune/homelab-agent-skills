@@ -28,6 +28,7 @@ AGENTS: dict[str, dict] = {
                    "home":     "Home all axes? The head and bed will move." + _MID_PRINT,
                    "savez":    "Save the Z-offset and restart Klipper?" + _MID_PRINT,
                    "apply":    "Apply the tuning changes to the live print?",
+                   "firmware": "Restart Klipper's firmware connection?" + _MID_PRINT,
                }},
     "Hermes": {"port": 8703, "emoji": "🖥️", "role": "Server caretaker",     "service": "agent-hermes",
                "confirm": {
